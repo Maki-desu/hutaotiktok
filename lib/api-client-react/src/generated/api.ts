@@ -36,6 +36,7 @@ import type {
   MonitoredAccountInput,
   PostNotification,
   PublicSettings,
+  TiktokAnalysis,
   TiktokFetchInput,
   TiktokVideoInfo,
   ToggleMonitorInput,
@@ -131,6 +132,77 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
 
 
+
+export const getAnalyzeTiktokVideoUrl = () => {
+
+
+
+
+  return `/api/tiktok/analyze`
+}
+
+/**
+ * @summary Get full metadata and statistics for a TikTok video
+ */
+export const analyzeTiktokVideo = async (tiktokFetchInput: TiktokFetchInput, options?: RequestInit): Promise<TiktokAnalysis> => {
+
+  return customFetch<TiktokAnalysis>(getAnalyzeTiktokVideoUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      tiktokFetchInput,)
+  }
+);}
+
+
+
+
+export const getAnalyzeTiktokVideoMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeTiktokVideo>>, TError,{data: BodyType<TiktokFetchInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof analyzeTiktokVideo>>, TError,{data: BodyType<TiktokFetchInput>}, TContext> => {
+
+const mutationKey = ['analyzeTiktokVideo'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof analyzeTiktokVideo>>, {data: BodyType<TiktokFetchInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  analyzeTiktokVideo(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AnalyzeTiktokVideoMutationResult = NonNullable<Awaited<ReturnType<typeof analyzeTiktokVideo>>>
+    export type AnalyzeTiktokVideoMutationBody = BodyType<TiktokFetchInput>
+    export type AnalyzeTiktokVideoMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Get full metadata and statistics for a TikTok video
+ */
+export const useAnalyzeTiktokVideo = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeTiktokVideo>>, TError,{data: BodyType<TiktokFetchInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof analyzeTiktokVideo>>,
+        TError,
+        {data: BodyType<TiktokFetchInput>},
+        TContext
+      > => {
+      return useMutation(getAnalyzeTiktokVideoMutationOptions(options));
+    }
 
 export const getFetchTiktokVideoUrl = () => {
 

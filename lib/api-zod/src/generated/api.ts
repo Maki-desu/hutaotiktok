@@ -18,6 +18,64 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * @summary Get full metadata and statistics for a TikTok video
+ */
+export const AnalyzeTiktokVideoBody = zod.object({
+  "url": zod.string()
+})
+
+export const AnalyzeTiktokVideoResponse = zod.object({
+  "id": zod.string(),
+  "caption": zod.string(),
+  "createTime": zod.number().nullish(),
+  "duration": zod.number().nullish(),
+  "region": zod.string().nullish(),
+  "thumbnail": zod.string().nullish(),
+  "isPhoto": zod.boolean(),
+  "photos": zod.array(zod.string()),
+  "stats": zod.object({
+  "views": zod.number().nullable(),
+  "likes": zod.number().nullable(),
+  "comments": zod.number().nullable(),
+  "shares": zod.number().nullable(),
+  "downloads": zod.number().nullable()
+}),
+  "videoMeta": zod.object({
+  "ratio": zod.string().nullable(),
+  "hdSize": zod.number().nullable(),
+  "normalSize": zod.number().nullable(),
+  "format": zod.string().nullable()
+}),
+  "author": zod.object({
+  "username": zod.string(),
+  "displayName": zod.string(),
+  "avatar": zod.string().nullish(),
+  "bio": zod.string().nullish(),
+  "verified": zod.boolean(),
+  "followers": zod.number().nullish(),
+  "following": zod.number().nullish(),
+  "likes": zod.number().nullish(),
+  "videoCount": zod.number().nullish()
+}),
+  "music": zod.object({
+  "title": zod.string(),
+  "author": zod.string(),
+  "url": zod.string().nullish(),
+  "cover": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "album": zod.string().nullish(),
+  "original": zod.boolean().nullish()
+}).optional(),
+  "downloadUrls": zod.object({
+  "hd": zod.string().nullable(),
+  "normal": zod.string().nullable(),
+  "low": zod.string().nullable(),
+  "audio": zod.string().nullable()
+})
+})
+
+
+/**
  * @summary Fetch TikTok video info from URL
  */
 export const FetchTiktokVideoBody = zod.object({

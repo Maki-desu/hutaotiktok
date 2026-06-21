@@ -35,6 +35,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /tiktok/analyze:
+    post:
+      operationId: analyzeTiktokVideo
+      tags: [tiktok]
+      summary: Get full metadata and statistics for a TikTok video
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TiktokFetchInput"
+      responses:
+        "200":
+          description: Full video analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TiktokAnalysis"
+        "400":
+          description: Invalid URL or private video
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /tiktok/fetch:
     post:
       operationId: fetchTiktokVideo
@@ -767,3 +798,128 @@ components:
         - author
         - authorUsername
         - quality
+
+    TiktokAnalysis:
+      type: object
+      properties:
+        id:
+          type: string
+        caption:
+          type: string
+        createTime:
+          type: ["integer", "null"]
+        duration:
+          type: ["integer", "null"]
+        region:
+          type: ["string", "null"]
+        thumbnail:
+          type: ["string", "null"]
+        isPhoto:
+          type: boolean
+        photos:
+          type: array
+          items:
+            type: string
+        stats:
+          $ref: "#/components/schemas/TiktokVideoStats"
+        videoMeta:
+          $ref: "#/components/schemas/TiktokVideoMeta"
+        author:
+          $ref: "#/components/schemas/TiktokVideoAuthor"
+        music:
+          $ref: "#/components/schemas/TiktokMusicDetail"
+        downloadUrls:
+          $ref: "#/components/schemas/DownloadUrls"
+      required:
+        - id
+        - caption
+        - isPhoto
+        - photos
+        - author
+        - downloadUrls
+        - stats
+        - videoMeta
+
+    TiktokVideoStats:
+      type: object
+      properties:
+        views:
+          type: ["integer", "null"]
+        likes:
+          type: ["integer", "null"]
+        comments:
+          type: ["integer", "null"]
+        shares:
+          type: ["integer", "null"]
+        downloads:
+          type: ["integer", "null"]
+      required:
+        - views
+        - likes
+        - comments
+        - shares
+        - downloads
+
+    TiktokVideoMeta:
+      type: object
+      properties:
+        ratio:
+          type: ["string", "null"]
+        hdSize:
+          type: ["integer", "null"]
+        normalSize:
+          type: ["integer", "null"]
+        format:
+          type: ["string", "null"]
+      required:
+        - ratio
+        - hdSize
+        - normalSize
+        - format
+
+    TiktokVideoAuthor:
+      type: object
+      properties:
+        username:
+          type: string
+        displayName:
+          type: string
+        avatar:
+          type: ["string", "null"]
+        bio:
+          type: ["string", "null"]
+        verified:
+          type: boolean
+        followers:
+          type: ["integer", "null"]
+        following:
+          type: ["integer", "null"]
+        likes:
+          type: ["integer", "null"]
+        videoCount:
+          type: ["integer", "null"]
+      required:
+        - username
+        - displayName
+        - verified
+
+    TiktokMusicDetail:
+      type: object
+      properties:
+        title:
+          type: string
+        author:
+          type: string
+        url:
+          type: ["string", "null"]
+        cover:
+          type: ["string", "null"]
+        duration:
+          type: ["integer", "null"]
+        album:
+          type: ["string", "null"]
+        original:
+          type: ["boolean", "null"]
+      required:
+        - title
+        - author

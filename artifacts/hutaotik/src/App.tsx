@@ -8,6 +8,7 @@ import Notifications from "@/pages/notifications";
 import History from "@/pages/history";
 import Admin from "@/pages/admin";
 import Showcase from "@/pages/showcase";
+import Analyze from "@/pages/analyze";
 import NotFound from "@/pages/not-found";
 import { setExtraHeaders } from "@workspace/api-client-react";
 
@@ -27,6 +28,7 @@ function Router() {
       <Route path="/notifications" component={Notifications} />
       <Route path="/history" component={History} />
       <Route path="/admin" component={Admin} />
+      <Route path="/analyze" component={Analyze} />
       <Route component={NotFound} />
     </Switch>
   );

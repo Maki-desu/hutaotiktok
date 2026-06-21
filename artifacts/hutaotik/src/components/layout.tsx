@@ -6,7 +6,7 @@ import {
   useGetUnreadNotificationCount,
   getGetUnreadNotificationCountQueryKey,
 } from "@workspace/api-client-react";
-import { Settings, Bell, Clock, Clapperboard, LockKeyhole, ExternalLink } from "lucide-react";
+import { Settings, Bell, Clock, Clapperboard, LockKeyhole, ExternalLink, BarChart2 } from "lucide-react";
 import logoFallback from "@assets/b52ef5e5af44af36517e4b1568bff58a_1780063742037.jpg";
 import bannerFallback from "@assets/4fb7478f6043ee9849d2fbb866bc6489_1780063761840.jpg";
 
@@ -135,6 +135,21 @@ export function Layout({ children }: { children: ReactNode }) {
           </Link>
 
           <nav className="flex items-center gap-1">
+
+            {/* Analyze */}
+            <Link
+              href="/analyze"
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
+                location === "/analyze"
+                  ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
+                  : "text-white/70 hover:text-white hover:bg-white/8"
+              }`}
+              data-testid="nav-analyze"
+              title="TikTok Video Analysis"
+            >
+              <BarChart2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Analyze</span>
+            </Link>
 
             {/* Showcase */}
             <Link

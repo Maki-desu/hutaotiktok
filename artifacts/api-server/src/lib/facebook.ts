@@ -1,10 +1,10 @@
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 import { logger } from "./logger";
+import { cobaltFetch } from "./cobalt";
 
 const execFileAsync = promisify(execFile);
 
-// Use the bundled up-to-date yt-dlp binary (system package may be outdated)
 const YT_DLP = "/home/runner/workspace/yt-dlp";
 
 export interface FacebookVideoInfo {
@@ -28,7 +28,7 @@ interface YtDlpOutput {
   formats?: YtDlpFormat[];
 }
 
-export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideoInfo | null> {
+async function fetchViaYtdlp(url: string): Promise<FacebookVideoInfo | null> {
   try {
     const { stdout } = await execFileAsync(
       YT_DLP,
@@ -36,10 +36,13 @@ export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideo
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
-        "--socket-timeout", "20",
+        "--no-check-certificates",
+        "--socket-timeout", "25",
+        "--extractor-args", "facebook:webpage_url_basename=videos",
+        "--add-header", "Referer:https://www.facebook.com/",
         url,
       ],
-      { timeout: 35_000 }
+      { timeout: 40_000 }
     );
 
     const data = JSON.parse(stdout) as YtDlpOutput;
@@ -48,7 +51,6 @@ export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideo
     let sdUrl: string | null = null;
 
     if (data.formats?.length) {
-      // Combined (audio+video) formats, sorted best-first
       const combined = data.formats
         .filter((f) => f.url && f.vcodec !== "none" && f.acodec !== "none")
         .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
@@ -60,7 +62,7 @@ export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideo
       hdUrl = data.url;
     }
 
-    if (!hdUrl && !sdUrl) return null;
+    if (!hdUrl) return null;
 
     return {
       title: data.title ?? "Facebook Video",
@@ -69,14 +71,36 @@ export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideo
       sdUrl,
     };
   } catch (err) {
-    logger.error({ err, url }, "facebook: yt-dlp error");
+    logger.debug({ err, url }, "facebook: yt-dlp attempt failed");
     return null;
   }
 }
 
-/**
- * Spawns a yt-dlp process that streams MP3 audio to stdout.
- */
+async function fetchViaCobalt(url: string): Promise<FacebookVideoInfo | null> {
+  try {
+    const result = await cobaltFetch(url, { downloadMode: "auto" });
+    if (!result?.url) return null;
+
+    return {
+      title: "Facebook Video",
+      thumbnail: null,
+      hdUrl: result.url,
+      sdUrl: null,
+    };
+  } catch (err) {
+    logger.error({ err, url }, "facebook: cobalt attempt failed");
+    return null;
+  }
+}
+
+export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideoInfo | null> {
+  const ytdlpResult = await fetchViaYtdlp(url);
+  if (ytdlpResult) return ytdlpResult;
+
+  logger.info({ url }, "facebook: yt-dlp failed, trying cobalt fallback");
+  return fetchViaCobalt(url);
+}
+
 export function spawnFacebookAudioDownload(url: string) {
   return spawn(YT_DLP, [
     "-x",
@@ -84,6 +108,9 @@ export function spawnFacebookAudioDownload(url: string) {
     "--audio-quality", "0",
     "--no-playlist",
     "--no-warnings",
+    "--no-check-certificates",
+    "--extractor-args", "facebook:webpage_url_basename=videos",
+    "--add-header", "Referer:https://www.facebook.com/",
     "-o", "-",
     url,
   ]);

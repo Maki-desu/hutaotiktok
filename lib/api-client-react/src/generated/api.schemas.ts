@@ -221,3 +221,80 @@ export interface DownloadRecordInput {
   quality: string;
 }
 
+export interface TiktokVideoStats {
+  /** @nullable */
+  views: number | null;
+  /** @nullable */
+  likes: number | null;
+  /** @nullable */
+  comments: number | null;
+  /** @nullable */
+  shares: number | null;
+  /** @nullable */
+  downloads: number | null;
+}
+
+export interface TiktokVideoMeta {
+  /** @nullable */
+  ratio: string | null;
+  /** @nullable */
+  hdSize: number | null;
+  /** @nullable */
+  normalSize: number | null;
+  /** @nullable */
+  format: string | null;
+}
+
+export interface TiktokVideoAuthor {
+  username: string;
+  displayName: string;
+  /** @nullable */
+  avatar?: string | null;
+  /** @nullable */
+  bio?: string | null;
+  verified: boolean;
+  /** @nullable */
+  followers?: number | null;
+  /** @nullable */
+  following?: number | null;
+  /** @nullable */
+  likes?: number | null;
+  /** @nullable */
+  videoCount?: number | null;
+}
+
+export interface TiktokMusicDetail {
+  title: string;
+  author: string;
+  /** @nullable */
+  url?: string | null;
+  /** @nullable */
+  cover?: string | null;
+  /** @nullable */
+  duration?: number | null;
+  /** @nullable */
+  album?: string | null;
+  /** @nullable */
+  original?: boolean | null;
+}
+
+export interface TiktokAnalysis {
+  id: string;
+  caption: string;
+  /** @nullable */
+  createTime?: number | null;
+  /** @nullable */
+  duration?: number | null;
+  /** @nullable */
+  region?: string | null;
+  /** @nullable */
+  thumbnail?: string | null;
+  isPhoto: boolean;
+  photos: string[];
+  stats: TiktokVideoStats;
+  videoMeta: TiktokVideoMeta;
+  author: TiktokVideoAuthor;
+  music?: TiktokMusicDetail;
+  downloadUrls: DownloadUrls;
+}
+

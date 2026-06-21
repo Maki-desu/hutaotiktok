@@ -54,7 +54,9 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
+        "--no-check-certificates",
         "--socket-timeout", "20",
+        "--extractor-args", "youtube:player_client=ios,web",
         url,
       ],
       { timeout: 35_000 }
@@ -127,6 +129,8 @@ export async function getYouTubeCdnUrl(url: string, formatStr: string): Promise<
         "-f", formatStr,
         "--no-playlist",
         "--no-warnings",
+        "--no-check-certificates",
+        "--extractor-args", "youtube:player_client=ios,web",
         url,
       ],
       { timeout: 30_000 }
@@ -155,6 +159,8 @@ export async function downloadYouTubeMuxed(url: string, formatStr: string): Prom
       "--merge-output-format", "mp4",
       "--no-playlist",
       "--no-warnings",
+      "--no-check-certificates",
+      "--extractor-args", "youtube:player_client=ios,web",
       "-o", tmpPath,
       url,
     ],
@@ -187,6 +193,8 @@ export function spawnYouTubeAudioChain(url: string) {
     "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
     "--no-playlist",
     "--no-warnings",
+    "--no-check-certificates",
+    "--extractor-args", "youtube:player_client=ios,web",
     "-o", "-",
     url,
   ]);
