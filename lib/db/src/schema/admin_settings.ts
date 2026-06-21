@@ -18,6 +18,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   adminName: text("admin_name").notNull().default("Admin"),
   youtubeEnabled: boolean("youtube_enabled").notNull().default(true),
   facebookEnabled: boolean("facebook_enabled").notNull().default(true),
+  analyzeEnabled: boolean("analyze_enabled").notNull().default(true),
 });
 
 export const insertAdminSettingsSchema = createInsertSchema(adminSettingsTable).omit({ id: true });

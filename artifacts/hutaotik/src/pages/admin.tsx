@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Loader2, ShieldAlert, Plus, Trash2, Link as LinkIcon, Settings2, Bell,
   MessageSquare, Upload, X, Pin, Clapperboard, ToggleLeft, Download,
-  Clock, LockKeyhole, Youtube
+  Clock, LockKeyhole, Youtube, BarChart2
 } from "lucide-react";
 import { SiFacebook } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
@@ -1011,6 +1011,14 @@ function FeaturesTab() {
           enabled={settings?.facebookEnabled ?? true}
           onToggle={(v) => handleToggle("facebookEnabled", v)}
           isLoading={pending === "facebookEnabled"}
+        />
+        <FeatureCard
+          icon={<BarChart2 className="w-5 h-5" />}
+          title="Video Analysis"
+          description="Analyze TikTok videos for detailed stats: views, likes, author info, metadata, and music details."
+          enabled={settings?.analyzeEnabled ?? true}
+          onToggle={(v) => handleToggle("analyzeEnabled", v)}
+          isLoading={pending === "analyzeEnabled"}
         />
       </div>
     </div>

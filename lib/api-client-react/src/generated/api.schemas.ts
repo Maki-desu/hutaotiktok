@@ -131,6 +131,15 @@ export interface AdminSettings {
   tiktokAvatarUrl?: string | null;
   siteTitle: string;
   footerText: string;
+  adminName?: string;
+  downloadsEnabled?: boolean;
+  alertsEnabled?: boolean;
+  historyEnabled?: boolean;
+  showcaseEnabled?: boolean;
+  youtubeEnabled?: boolean;
+  facebookEnabled?: boolean;
+  analyzeEnabled?: boolean;
+  maxShowcasePins?: number;
 }
 
 export interface AdminSettingsUpdate {
@@ -144,6 +153,15 @@ export interface AdminSettingsUpdate {
   tiktokAvatarUrl?: string | null;
   siteTitle?: string;
   footerText?: string;
+  adminName?: string;
+  downloadsEnabled?: boolean;
+  alertsEnabled?: boolean;
+  historyEnabled?: boolean;
+  showcaseEnabled?: boolean;
+  youtubeEnabled?: boolean;
+  facebookEnabled?: boolean;
+  analyzeEnabled?: boolean;
+  maxShowcasePins?: number;
 }
 
 export interface PublicSettings {
@@ -157,12 +175,24 @@ export interface PublicSettings {
   tiktokAvatarUrl?: string | null;
   siteTitle: string;
   footerText: string;
+  adminName?: string;
+  downloadsEnabled?: boolean;
+  alertsEnabled?: boolean;
+  historyEnabled?: boolean;
+  showcaseEnabled?: boolean;
+  youtubeEnabled?: boolean;
+  facebookEnabled?: boolean;
+  analyzeEnabled?: boolean;
 }
 
 export interface MonitoredAccount {
   id: number;
   tiktokUrl: string;
   username: string;
+  /** @nullable */
+  displayName?: string | null;
+  /** @nullable */
+  bio?: string | null;
   /** @nullable */
   avatarUrl?: string | null;
   notificationsEnabled: boolean;
@@ -243,6 +273,10 @@ export interface TiktokVideoMeta {
   normalSize: number | null;
   /** @nullable */
   format: string | null;
+  /** @nullable */
+  width?: number | null;
+  /** @nullable */
+  height?: number | null;
 }
 
 export interface TiktokVideoAuthor {

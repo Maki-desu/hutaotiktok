@@ -11,6 +11,10 @@ export interface MonitoredAccount {
   tiktokUrl: string;
   username: string;
   /** @nullable */
+  displayName?: string | null;
+  /** @nullable */
+  bio?: string | null;
+  /** @nullable */
   avatarUrl?: string | null;
   notificationsEnabled: boolean;
   /** @nullable */

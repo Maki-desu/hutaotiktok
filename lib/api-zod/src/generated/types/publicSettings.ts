@@ -17,4 +17,12 @@ export interface PublicSettings {
   tiktokAvatarUrl?: string | null;
   siteTitle: string;
   footerText: string;
+  adminName?: string;
+  downloadsEnabled?: boolean;
+  alertsEnabled?: boolean;
+  historyEnabled?: boolean;
+  showcaseEnabled?: boolean;
+  youtubeEnabled?: boolean;
+  facebookEnabled?: boolean;
+  analyzeEnabled?: boolean;
 }

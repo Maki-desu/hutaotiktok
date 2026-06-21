@@ -140,6 +140,8 @@ export function Layout({ children }: { children: ReactNode }) {
             <Link
               href="/analyze"
               className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
+                publicSettings?.analyzeEnabled === false ? "opacity-40" : ""
+              } ${
                 location === "/analyze"
                   ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
                   : "text-white/70 hover:text-white hover:bg-white/8"
@@ -149,6 +151,11 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               <BarChart2 className="w-4 h-4" />
               <span className="hidden sm:inline">Analyze</span>
+              {publicSettings?.analyzeEnabled === false && (
+                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-zinc-700 border border-black/40 flex items-center justify-center">
+                  <LockKeyhole className="w-2 h-2 text-zinc-300" />
+                </span>
+              )}
             </Link>
 
             {/* Showcase */}

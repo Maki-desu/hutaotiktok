@@ -1,1 +1,2 @@
 - [setExtraHeaders in api-client-react](set-extra-headers.md) — custom functions added to custom-fetch.ts for admin token injection; must rebuild libs after editing.
+- [yt-dlp Python3 and dump-json flags](yt-dlp-setup.md) — Python3 must be installed; avoid extractor-args in dump-json calls

@@ -38,6 +38,7 @@ async function getOrCreateSettings() {
     adminName: "Admin",
     youtubeEnabled: true,
     facebookEnabled: true,
+    analyzeEnabled: true,
   }).returning();
   return created;
 }
@@ -80,6 +81,7 @@ router.get("/admin/settings/public", async (_req, res): Promise<void> => {
     adminName: settings.adminName,
     youtubeEnabled: settings.youtubeEnabled,
     facebookEnabled: settings.facebookEnabled,
+    analyzeEnabled: settings.analyzeEnabled,
   });
 });
 

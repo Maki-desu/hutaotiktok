@@ -626,6 +626,24 @@ components:
           type: string
         footerText:
           type: string
+        adminName:
+          type: string
+        downloadsEnabled:
+          type: boolean
+        alertsEnabled:
+          type: boolean
+        historyEnabled:
+          type: boolean
+        showcaseEnabled:
+          type: boolean
+        youtubeEnabled:
+          type: boolean
+        facebookEnabled:
+          type: boolean
+        analyzeEnabled:
+          type: boolean
+        maxShowcasePins:
+          type: integer
       required:
         - siteTitle
         - footerText
@@ -645,6 +663,24 @@ components:
           type: string
         footerText:
           type: string
+        adminName:
+          type: string
+        downloadsEnabled:
+          type: boolean
+        alertsEnabled:
+          type: boolean
+        historyEnabled:
+          type: boolean
+        showcaseEnabled:
+          type: boolean
+        youtubeEnabled:
+          type: boolean
+        facebookEnabled:
+          type: boolean
+        analyzeEnabled:
+          type: boolean
+        maxShowcasePins:
+          type: integer
 
     PublicSettings:
       type: object
@@ -661,6 +697,22 @@ components:
           type: string
         footerText:
           type: string
+        adminName:
+          type: string
+        downloadsEnabled:
+          type: boolean
+        alertsEnabled:
+          type: boolean
+        historyEnabled:
+          type: boolean
+        showcaseEnabled:
+          type: boolean
+        youtubeEnabled:
+          type: boolean
+        facebookEnabled:
+          type: boolean
+        analyzeEnabled:
+          type: boolean
       required:
         - siteTitle
         - footerText
@@ -674,6 +726,10 @@ components:
           type: string
         username:
           type: string
+        displayName:
+          type: ["string", "null"]
+        bio:
+          type: ["string", "null"]
         avatarUrl:
           type: ["string", "null"]
         notificationsEnabled:
@@ -871,6 +927,10 @@ components:
           type: ["integer", "null"]
         format:
           type: ["string", "null"]
+        width:
+          type: ["integer", "null"]
+        height:
+          type: ["integer", "null"]
       required:
         - ratio
         - hdSize

@@ -53,6 +53,8 @@ interface TikwmFullData {
   ratio?: string;
   region?: string;
   format?: string;
+  width?: number;
+  height?: number;
 }
 
 router.post("/tiktok/analyze", async (req, res): Promise<void> => {
@@ -121,6 +123,8 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
         hdSize: d.hd_size ?? null,
         normalSize: d.size ?? null,
         format: d.format ?? null,
+        width: d.width ?? null,
+        height: d.height ?? null,
       },
       author: {
         username: d.author?.unique_id ?? "unknown",

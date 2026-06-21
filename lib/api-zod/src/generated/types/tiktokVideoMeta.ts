@@ -15,4 +15,8 @@ export interface TiktokVideoMeta {
   normalSize: number | null;
   /** @nullable */
   format: string | null;
+  /** @nullable */
+  width?: number | null;
+  /** @nullable */
+  height?: number | null;
 }

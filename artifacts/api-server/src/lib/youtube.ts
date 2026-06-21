@@ -56,7 +56,6 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
         "--no-warnings",
         "--no-check-certificates",
         "--socket-timeout", "20",
-        "--extractor-args", "youtube:player_client=ios,web",
         url,
       ],
       { timeout: 35_000 }

@@ -44,7 +44,9 @@ export const AnalyzeTiktokVideoResponse = zod.object({
   "ratio": zod.string().nullable(),
   "hdSize": zod.number().nullable(),
   "normalSize": zod.number().nullable(),
-  "format": zod.string().nullable()
+  "format": zod.string().nullable(),
+  "width": zod.number().nullish(),
+  "height": zod.number().nullish()
 }),
   "author": zod.object({
   "username": zod.string(),
@@ -207,7 +209,16 @@ export const GetAdminSettingsResponse = zod.object({
   "tiktokProfileUrl": zod.string().nullish(),
   "tiktokAvatarUrl": zod.string().nullish(),
   "siteTitle": zod.string(),
-  "footerText": zod.string()
+  "footerText": zod.string(),
+  "adminName": zod.string().optional(),
+  "downloadsEnabled": zod.boolean().optional(),
+  "alertsEnabled": zod.boolean().optional(),
+  "historyEnabled": zod.boolean().optional(),
+  "showcaseEnabled": zod.boolean().optional(),
+  "youtubeEnabled": zod.boolean().optional(),
+  "facebookEnabled": zod.boolean().optional(),
+  "analyzeEnabled": zod.boolean().optional(),
+  "maxShowcasePins": zod.number().optional()
 })
 
 
@@ -220,7 +231,16 @@ export const UpdateAdminSettingsBody = zod.object({
   "tiktokProfileUrl": zod.string().nullish(),
   "tiktokAvatarUrl": zod.string().nullish(),
   "siteTitle": zod.string().optional(),
-  "footerText": zod.string().optional()
+  "footerText": zod.string().optional(),
+  "adminName": zod.string().optional(),
+  "downloadsEnabled": zod.boolean().optional(),
+  "alertsEnabled": zod.boolean().optional(),
+  "historyEnabled": zod.boolean().optional(),
+  "showcaseEnabled": zod.boolean().optional(),
+  "youtubeEnabled": zod.boolean().optional(),
+  "facebookEnabled": zod.boolean().optional(),
+  "analyzeEnabled": zod.boolean().optional(),
+  "maxShowcasePins": zod.number().optional()
 })
 
 export const UpdateAdminSettingsResponse = zod.object({
@@ -229,7 +249,16 @@ export const UpdateAdminSettingsResponse = zod.object({
   "tiktokProfileUrl": zod.string().nullish(),
   "tiktokAvatarUrl": zod.string().nullish(),
   "siteTitle": zod.string(),
-  "footerText": zod.string()
+  "footerText": zod.string(),
+  "adminName": zod.string().optional(),
+  "downloadsEnabled": zod.boolean().optional(),
+  "alertsEnabled": zod.boolean().optional(),
+  "historyEnabled": zod.boolean().optional(),
+  "showcaseEnabled": zod.boolean().optional(),
+  "youtubeEnabled": zod.boolean().optional(),
+  "facebookEnabled": zod.boolean().optional(),
+  "analyzeEnabled": zod.boolean().optional(),
+  "maxShowcasePins": zod.number().optional()
 })
 
 
@@ -242,7 +271,15 @@ export const GetPublicSettingsResponse = zod.object({
   "tiktokProfileUrl": zod.string().nullish(),
   "tiktokAvatarUrl": zod.string().nullish(),
   "siteTitle": zod.string(),
-  "footerText": zod.string()
+  "footerText": zod.string(),
+  "adminName": zod.string().optional(),
+  "downloadsEnabled": zod.boolean().optional(),
+  "alertsEnabled": zod.boolean().optional(),
+  "historyEnabled": zod.boolean().optional(),
+  "showcaseEnabled": zod.boolean().optional(),
+  "youtubeEnabled": zod.boolean().optional(),
+  "facebookEnabled": zod.boolean().optional(),
+  "analyzeEnabled": zod.boolean().optional()
 })
 
 
@@ -253,6 +290,8 @@ export const ListMonitoredAccountsResponseItem = zod.object({
   "id": zod.number(),
   "tiktokUrl": zod.string(),
   "username": zod.string(),
+  "displayName": zod.string().nullish(),
+  "bio": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationsEnabled": zod.boolean(),
   "lastCheckedAt": zod.string().nullish(),
@@ -297,6 +336,8 @@ export const ToggleMonitoredAccountResponse = zod.object({
   "id": zod.number(),
   "tiktokUrl": zod.string(),
   "username": zod.string(),
+  "displayName": zod.string().nullish(),
+  "bio": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationsEnabled": zod.boolean(),
   "lastCheckedAt": zod.string().nullish(),

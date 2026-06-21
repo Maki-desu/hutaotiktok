@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { useAnalyzeTiktokVideo } from "@workspace/api-client-react";
+import { useAnalyzeTiktokVideo, useGetPublicSettings } from "@workspace/api-client-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,6 +27,7 @@ import {
   CloudDownload,
   BadgeCheck,
   Play,
+  LockKeyhole,
 } from "lucide-react";
 import { SiTiktok } from "react-icons/si";
 
@@ -51,6 +52,8 @@ type TiktokAnalysis = {
     hdSize: number | null;
     normalSize: number | null;
     format: string | null;
+    width: number | null;
+    height: number | null;
   };
   author: {
     username: string;
@@ -160,7 +163,22 @@ export default function Analyze() {
   const lastFetchTime = useRef<number>(0);
   const [cooldown, setCooldown] = useState(0);
 
+  const { data: publicSettings } = useGetPublicSettings();
   const analyzeMutation = useAnalyzeTiktokVideo();
+
+  if (publicSettings?.analyzeEnabled === false) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center px-4">
+        <div className="w-16 h-16 rounded-2xl bg-zinc-800 flex items-center justify-center">
+          <LockKeyhole className="w-8 h-8 text-zinc-400" />
+        </div>
+        <h2 className="text-xl font-bold text-foreground">Feature Disabled</h2>
+        <p className="text-muted-foreground max-w-sm">
+          Video analysis has been disabled by the admin.
+        </p>
+      </div>
+    );
+  }
 
   const handleAnalyze = (inputUrl: string) => {
     const trimmed = inputUrl.trim();
@@ -384,7 +402,11 @@ export default function Analyze() {
           <div className="bg-card border border-border rounded-2xl p-4 space-y-1">
             <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold mb-2">Video Details</p>
             <MetaRow icon={Clock} label="Duration" value={fmtDur(data.duration)} />
-            <MetaRow icon={MonitorPlay} label="Resolution" value={data.videoMeta.ratio ?? "—"} />
+            <MetaRow icon={MonitorPlay} label="Resolution" value={
+              data.videoMeta.width && data.videoMeta.height
+                ? `${data.videoMeta.width}×${data.videoMeta.height}${data.videoMeta.ratio ? ` (${data.videoMeta.ratio})` : ""}`
+                : (data.videoMeta.ratio ?? "—")
+            } />
             <MetaRow icon={Gauge} label="Bitrate" value={fmtBitrate(data.videoMeta.hdSize ?? data.videoMeta.normalSize, data.duration)} />
             <MetaRow icon={HardDrive} label="HD File Size" value={fmtBytes(data.videoMeta.hdSize)} />
             <MetaRow icon={HardDrive} label="Normal File Size" value={fmtBytes(data.videoMeta.normalSize)} />
