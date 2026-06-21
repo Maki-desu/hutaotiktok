@@ -1,0 +1,1 @@
+- [setExtraHeaders in api-client-react](set-extra-headers.md) — custom functions added to custom-fetch.ts for admin token injection; must rebuild libs after editing.

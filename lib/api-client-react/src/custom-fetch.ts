@@ -17,6 +17,23 @@ const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 
 let _baseUrl: string | null = null;
 let _authTokenGetter: AuthTokenGetter | null = null;
+let _extraHeaders: Record<string, string> = {};
+
+/**
+ * Set extra headers to be included on every request.
+ * Useful for API tokens (e.g. admin auth) that must be sent with every call.
+ * Merge with existing headers; pass an empty object to clear.
+ */
+export function setExtraHeaders(headers: Record<string, string>): void {
+  _extraHeaders = { ..._extraHeaders, ...headers };
+}
+
+/**
+ * Clear all extra headers previously set via setExtraHeaders.
+ */
+export function clearExtraHeaders(): void {
+  _extraHeaders = {};
+}
 
 /**
  * Set a base URL that is prepended to every relative request URL
@@ -347,6 +364,13 @@ export async function customFetch<T = unknown>(
 
   if (responseType === "json" && !headers.has("accept")) {
     headers.set("accept", DEFAULT_JSON_ACCEPT);
+  }
+
+  // Attach any extra headers (e.g. admin token) that have been set globally.
+  for (const [key, value] of Object.entries(_extraHeaders)) {
+    if (!headers.has(key)) {
+      headers.set(key, value);
+    }
   }
 
   // Attach bearer token when an auth getter is configured and no

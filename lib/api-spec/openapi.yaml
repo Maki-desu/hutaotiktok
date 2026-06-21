@@ -3,13 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: HutaoTik API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: tiktok
+    description: TikTok video fetch and download
+  - name: announcements
+    description: Public announcements
+  - name: admin
+    description: Admin operations
+  - name: notifications
+    description: Post notifications
+  - name: history
+    description: Download history
 paths:
   /healthz:
     get:
@@ -24,7 +34,375 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /tiktok/fetch:
+    post:
+      operationId: fetchTiktokVideo
+      tags: [tiktok]
+      summary: Fetch TikTok video info from URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TiktokFetchInput"
+      responses:
+        "200":
+          description: Video info fetched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TiktokVideoInfo"
+        "400":
+          description: Invalid URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /announcements:
+    get:
+      operationId: listAnnouncements
+      tags: [announcements]
+      summary: List active announcements
+      responses:
+        "200":
+          description: List of active announcements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Announcement"
+
+  /admin/login:
+    post:
+      operationId: adminLogin
+      tags: [admin]
+      summary: Admin login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginInput"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuthResult"
+        "401":
+          description: Invalid password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/announcements:
+    get:
+      operationId: adminListAnnouncements
+      tags: [admin]
+      summary: List all announcements (admin)
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: List of all announcements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Announcement"
+    post:
+      operationId: createAnnouncement
+      tags: [admin]
+      summary: Create announcement
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnouncementInput"
+      responses:
+        "201":
+          description: Announcement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Announcement"
+
+  /admin/announcements/{id}:
+    put:
+      operationId: updateAnnouncement
+      tags: [admin]
+      summary: Update announcement
+      security:
+        - adminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnouncementUpdate"
+      responses:
+        "200":
+          description: Updated announcement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Announcement"
+    delete:
+      operationId: deleteAnnouncement
+      tags: [admin]
+      summary: Delete announcement
+      security:
+        - adminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResponse"
+
+  /admin/settings:
+    get:
+      operationId: getAdminSettings
+      tags: [admin]
+      summary: Get admin settings
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Admin settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSettings"
+    put:
+      operationId: updateAdminSettings
+      tags: [admin]
+      summary: Update admin settings
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminSettingsUpdate"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSettings"
+
+  /admin/settings/public:
+    get:
+      operationId: getPublicSettings
+      tags: [admin]
+      summary: Get public site settings (logo, banner, social link)
+      responses:
+        "200":
+          description: Public settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicSettings"
+
+  /admin/monitored-accounts:
+    get:
+      operationId: listMonitoredAccounts
+      tags: [admin]
+      summary: List monitored TikTok accounts
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: List of monitored accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonitoredAccount"
+    post:
+      operationId: addMonitoredAccount
+      tags: [admin]
+      summary: Add TikTok account to monitor
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitoredAccountInput"
+      responses:
+        "201":
+          description: Account added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoredAccount"
+
+  /admin/monitored-accounts/{id}:
+    delete:
+      operationId: removeMonitoredAccount
+      tags: [admin]
+      summary: Remove monitored account
+      security:
+        - adminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResponse"
+    patch:
+      operationId: toggleMonitoredAccount
+      tags: [admin]
+      summary: Toggle notifications for monitored account
+      security:
+        - adminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToggleMonitorInput"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoredAccount"
+
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List post notifications
+      responses:
+        "200":
+          description: List of notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PostNotification"
+
+  /notifications/unread-count:
+    get:
+      operationId: getUnreadNotificationCount
+      tags: [notifications]
+      summary: Get unread notification count
+      responses:
+        "200":
+          description: Unread count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnreadCount"
+
+  /notifications/{id}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark notification as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Marked read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostNotification"
+
+  /downloads/history:
+    get:
+      operationId: listDownloadHistory
+      tags: [history]
+      summary: List recent download history
+      responses:
+        "200":
+          description: Download history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DownloadRecord"
+    post:
+      operationId: addDownloadRecord
+      tags: [history]
+      summary: Add a download record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DownloadRecordInput"
+      responses:
+        "201":
+          description: Record added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadRecord"
+
 components:
+  securitySchemes:
+    adminToken:
+      type: apiKey
+      in: header
+      name: x-admin-token
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +412,358 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    DeleteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+      required:
+        - success
+
+    TiktokFetchInput:
+      type: object
+      properties:
+        url:
+          type: string
+      required:
+        - url
+
+    TiktokVideoInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        author:
+          type: string
+        authorUsername:
+          type: string
+        authorAvatar:
+          type: ["string", "null"]
+        thumbnail:
+          type: ["string", "null"]
+        duration:
+          type: ["integer", "null"]
+        downloadUrls:
+          $ref: "#/components/schemas/DownloadUrls"
+        isPhoto:
+          type: boolean
+        photos:
+          type: array
+          items:
+            type: string
+        music:
+          $ref: "#/components/schemas/MusicInfo"
+      required:
+        - id
+        - title
+        - author
+        - authorUsername
+        - downloadUrls
+        - isPhoto
+        - photos
+
+    DownloadUrls:
+      type: object
+      properties:
+        hd:
+          type: ["string", "null"]
+        normal:
+          type: ["string", "null"]
+        low:
+          type: ["string", "null"]
+        audio:
+          type: ["string", "null"]
+      required:
+        - hd
+        - normal
+        - low
+        - audio
+
+    MusicInfo:
+      type: object
+      properties:
+        title:
+          type: string
+        author:
+          type: string
+        url:
+          type: ["string", "null"]
+      required:
+        - title
+        - author
+        - url
+
+    Announcement:
+      type: object
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+        colorType:
+          type: string
+          enum: [info, warning, update]
+        expiresAt:
+          type: ["string", "null"]
+        isPermanent:
+          type: boolean
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+      required:
+        - id
+        - content
+        - colorType
+        - isPermanent
+        - isActive
+        - createdAt
+
+    AnnouncementInput:
+      type: object
+      properties:
+        content:
+          type: string
+        colorType:
+          type: string
+          enum: [info, warning, update]
+        durationDays:
+          type: ["integer", "null"]
+        isPermanent:
+          type: boolean
+      required:
+        - content
+        - colorType
+        - isPermanent
+
+    AnnouncementUpdate:
+      type: object
+      properties:
+        content:
+          type: string
+        colorType:
+          type: string
+          enum: [info, warning, update]
+        durationDays:
+          type: ["integer", "null"]
+        isPermanent:
+          type: boolean
+        isActive:
+          type: boolean
+
+    AdminLoginInput:
+      type: object
+      properties:
+        password:
+          type: string
+      required:
+        - password
+
+    AdminAuthResult:
+      type: object
+      properties:
+        token:
+          type: string
+        success:
+          type: boolean
+      required:
+        - token
+        - success
+
+    AdminSettings:
+      type: object
+      properties:
+        logoUrl:
+          type: ["string", "null"]
+        bannerUrl:
+          type: ["string", "null"]
+        tiktokProfileUrl:
+          type: ["string", "null"]
+        tiktokAvatarUrl:
+          type: ["string", "null"]
+        siteTitle:
+          type: string
+        footerText:
+          type: string
+      required:
+        - siteTitle
+        - footerText
+
+    AdminSettingsUpdate:
+      type: object
+      properties:
+        logoUrl:
+          type: ["string", "null"]
+        bannerUrl:
+          type: ["string", "null"]
+        tiktokProfileUrl:
+          type: ["string", "null"]
+        tiktokAvatarUrl:
+          type: ["string", "null"]
+        siteTitle:
+          type: string
+        footerText:
+          type: string
+
+    PublicSettings:
+      type: object
+      properties:
+        logoUrl:
+          type: ["string", "null"]
+        bannerUrl:
+          type: ["string", "null"]
+        tiktokProfileUrl:
+          type: ["string", "null"]
+        tiktokAvatarUrl:
+          type: ["string", "null"]
+        siteTitle:
+          type: string
+        footerText:
+          type: string
+      required:
+        - siteTitle
+        - footerText
+
+    MonitoredAccount:
+      type: object
+      properties:
+        id:
+          type: integer
+        tiktokUrl:
+          type: string
+        username:
+          type: string
+        avatarUrl:
+          type: ["string", "null"]
+        notificationsEnabled:
+          type: boolean
+        lastCheckedAt:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - tiktokUrl
+        - username
+        - notificationsEnabled
+        - createdAt
+
+    MonitoredAccountInput:
+      type: object
+      properties:
+        tiktokUrl:
+          type: string
+        username:
+          type: string
+      required:
+        - tiktokUrl
+        - username
+
+    ToggleMonitorInput:
+      type: object
+      properties:
+        notificationsEnabled:
+          type: boolean
+      required:
+        - notificationsEnabled
+
+    PostNotification:
+      type: object
+      properties:
+        id:
+          type: integer
+        monitoredAccountId:
+          type: integer
+        username:
+          type: string
+        avatarUrl:
+          type: ["string", "null"]
+        videoId:
+          type: string
+        videoTitle:
+          type: string
+        thumbnail:
+          type: ["string", "null"]
+        videoUrl:
+          type: string
+        isRead:
+          type: boolean
+        createdAt:
+          type: string
+      required:
+        - id
+        - monitoredAccountId
+        - username
+        - videoId
+        - videoTitle
+        - videoUrl
+        - isRead
+        - createdAt
+
+    UnreadCount:
+      type: object
+      properties:
+        count:
+          type: integer
+      required:
+        - count
+
+    DownloadRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        videoId:
+          type: string
+        title:
+          type: string
+        author:
+          type: string
+        authorUsername:
+          type: string
+        thumbnail:
+          type: ["string", "null"]
+        quality:
+          type: string
+        downloadedAt:
+          type: string
+      required:
+        - id
+        - videoId
+        - title
+        - author
+        - authorUsername
+        - quality
+        - downloadedAt
+
+    DownloadRecordInput:
+      type: object
+      properties:
+        videoId:
+          type: string
+        title:
+          type: string
+        author:
+          type: string
+        authorUsername:
+          type: string
+        thumbnail:
+          type: ["string", "null"]
+        quality:
+          type: string
+      required:
+        - videoId
+        - title
+        - author
+        - authorUsername
+        - quality

@@ -1,5 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startMonitor } from "./lib/monitor";
+import { recacheThumbnails } from "./lib/recache-thumbnails";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +24,7 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  startMonitor();
+  // Re-download any existing thumbnails that still point to expiring CDN URLs
+  void recacheThumbnails();
 });
