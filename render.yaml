@@ -3,7 +3,7 @@ services:
     name: hutaotiktok-api
     runtime: node
     plan: free
-    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/api-server run build
+    buildCommand: chmod +x yt-dlp && pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start
     envVars:
       - key: NODE_ENV
