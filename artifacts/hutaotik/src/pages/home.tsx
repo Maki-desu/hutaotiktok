@@ -63,6 +63,7 @@ export default function Home() {
   const { data: announcements } = useListAnnouncements({
     query: { queryKey: getListAnnouncementsQueryKey() },
   });
+  const activeAnnouncements = Array.isArray(announcements) ? announcements : [];
 
   const [isZipping, setIsZipping] = useState(false);
 
@@ -543,12 +544,12 @@ export default function Home() {
       )}
 
       {/* ── Announcements ────────────────────────────── */}
-      {announcements && announcements.length > 0 && (
+      {activeAnnouncements.length > 0 && (
         <div className="space-y-3 pt-2">
           <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground px-0.5">
             Announcements
           </p>
-          {announcements.map((ann) => (
+          {activeAnnouncements.map((ann) => (
             <div
               key={ann.id}
               className={`rounded-2xl border p-4 flex items-start gap-3 ${
