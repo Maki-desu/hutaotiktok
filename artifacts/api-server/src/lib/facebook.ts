@@ -1,11 +1,12 @@
 import { execFile, spawn } from "child_process";
+import { resolve } from "path";
 import { promisify } from "util";
 import { logger } from "./logger";
+
+const YT_DLP = process.env.YT_DLP_PATH ?? resolve(process.cwd(), "yt-dlp");
 import { cobaltFetch } from "./cobalt";
 
 const execFileAsync = promisify(execFile);
-
-const YT_DLP = "/home/runner/workspace/yt-dlp";
 
 export interface FacebookVideoInfo {
   title: string;

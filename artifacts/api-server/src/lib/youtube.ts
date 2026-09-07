@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { createReadStream, unlink, stat } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { resolve } from "path";
 import { logger } from "./logger";
 
 const execFileAsync = promisify(execFile);
@@ -10,7 +11,7 @@ const unlinkAsync = promisify(unlink);
 const statAsync = promisify(stat);
 
 // Use the bundled up-to-date yt-dlp binary
-const YT_DLP = "/home/runner/workspace/yt-dlp";
+const YT_DLP = process.env.YT_DLP_PATH ?? resolve(process.cwd(), "yt-dlp");
 
 export interface YouTubeFormat {
   formatStr: string;    // yt-dlp format selector e.g. "18" or "137+140"
