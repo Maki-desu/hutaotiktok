@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Download, Music, Loader2, AlertCircle } from "lucide-react";
 import { SiYoutube } from "react-icons/si";
+import { apiUrl } from "@/lib/api-url";
 
 interface YTFormat {
   formatStr: string;
@@ -55,7 +56,7 @@ export function YoutubeSection({ url }: Props) {
     setError(null);
     setSelected(null);
 
-    fetch(`/api/youtube/info?url=${encodeURIComponent(url)}`, {
+    fetch(apiUrl(`/api/youtube/info?url=${encodeURIComponent(url)}`), {
       signal: controller.signal,
     })
       .then(async (r) => {
@@ -90,12 +91,12 @@ export function YoutubeSection({ url }: Props) {
     const safeTitle = info.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, " ").trim().substring(0, 60);
 
     if (selected.type === "audio") {
-      href = `/api/youtube/download?url=${encodeURIComponent(url)}&audio=true&title=${encodeURIComponent(safeTitle)}`;
+      href = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&audio=true&title=${encodeURIComponent(safeTitle)}`);
       filename = `${safeTitle}.mp3`;
     } else {
       const fmt = info.formats.find((f) => f.formatStr === selected.formatStr);
       const ql = fmt?.qualityLabel ?? "";
-      href = `/api/youtube/download?url=${encodeURIComponent(url)}&formatStr=${encodeURIComponent(selected.formatStr)}&title=${encodeURIComponent(safeTitle)}&quality=${encodeURIComponent(ql)}`;
+      href = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&formatStr=${encodeURIComponent(selected.formatStr)}&title=${encodeURIComponent(safeTitle)}&quality=${encodeURIComponent(ql)}`);
       filename = `${safeTitle}${ql ? ` - ${ql}` : ""}.mp4`;
     }
 

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Download, Music, Loader2, AlertCircle } from "lucide-react";
 import { SiFacebook } from "react-icons/si";
+import { apiUrl } from "@/lib/api-url";
 
 interface FBInfo {
   title: string;
@@ -38,7 +39,7 @@ export function FacebookSection({ url }: Props) {
     setError(null);
     setSelected(null);
 
-    fetch(`/api/facebook/info?url=${encodeURIComponent(url)}`, {
+    fetch(apiUrl(`/api/facebook/info?url=${encodeURIComponent(url)}`), {
       signal: controller.signal,
     })
       .then(async (r) => {
@@ -72,13 +73,13 @@ export function FacebookSection({ url }: Props) {
     let filename: string;
 
     if (selected === "audio") {
-      href = `/api/facebook/download?url=${encodeURIComponent(url)}&audio=true`;
+      href = apiUrl(`/api/facebook/download?url=${encodeURIComponent(url)}&audio=true`);
       filename = `${safeTitle}.mp3`;
     } else {
       const videoUrl = selected === "hd" ? info.hdUrl! : info.sdUrl!;
       const quality = selected === "hd" ? "HD" : "SD";
       filename = `${safeTitle} - ${quality}.mp4`;
-      href = `/api/proxy-download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(filename)}`;
+      href = apiUrl(`/api/proxy-download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(filename)}`);
     }
 
     const a = document.createElement("a");
