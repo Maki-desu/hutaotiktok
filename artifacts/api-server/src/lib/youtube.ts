@@ -1,4 +1,4 @@
-import { execFile, spawn } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { createReadStream, unlink, stat } from "fs";
 import { tmpdir } from "os";
@@ -12,6 +12,27 @@ const statAsync = promisify(stat);
 
 // Use the bundled up-to-date yt-dlp binary
 const YT_DLP = process.env.YT_DLP_PATH ?? resolve(process.cwd(), "yt-dlp");
+const YOUTUBE_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtube-nocookie.com",
+  "www.youtube-nocookie.com",
+  "youtu.be",
+]);
+
+export function isYouTubeUrl(input: string): boolean {
+  try {
+    const url = new URL(input);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      YOUTUBE_HOSTS.has(url.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
 
 export interface YouTubeFormat {
   formatStr: string;    // yt-dlp format selector e.g. "18" or "137+140"
@@ -48,6 +69,8 @@ interface YtDlpOutput {
 }
 
 export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null> {
+  if (!isYouTubeUrl(url)) return null;
+
   try {
     const { stdout } = await execFileAsync(
       YT_DLP,
@@ -55,7 +78,6 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
-        "--no-check-certificates",
         "--socket-timeout", "20",
         url,
       ],
@@ -65,20 +87,25 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
     const data = JSON.parse(stdout) as YtDlpOutput;
     const allFormats = data.formats ?? [];
 
-    // Best m4a audio format for muxing
+    // Prefer AVC video and AAC audio for broad Android and browser playback support.
     const bestAudio = allFormats
-      .filter((f) => f.vcodec === "none" && f.acodec !== "none" && f.ext === "m4a")
+      .filter((f) => f.vcodec === "none" && f.acodec?.startsWith("mp4a") && f.ext === "m4a")
       .sort((a, b) => (b.tbr ?? 0) - (a.tbr ?? 0))[0];
-    const audioId = bestAudio?.format_id ?? "140";
+    const audioId = bestAudio?.format_id;
 
-    // Combined (audio+video) formats — direct CDN proxy, no muxing
+    const isCompatibleVideo = (f: YtDlpFormat) =>
+      typeof f.vcodec === "string" && f.vcodec.startsWith("avc1");
+    const isCompatibleAudio = (f: YtDlpFormat) =>
+      typeof f.acodec === "string" && f.acodec.startsWith("mp4a");
+
+    // Only offer H.264/AAC MP4 streams that play on common Android devices.
     const combined = allFormats
-      .filter((f) => f.vcodec !== "none" && f.acodec !== "none" && f.ext === "mp4")
+      .filter((f) => isCompatibleVideo(f) && isCompatibleAudio(f) && f.ext === "mp4")
       .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
 
-    // Video-only mp4 formats for muxed downloads
+    // H.264 video-only formats can be muxed with an AAC audio stream.
     const videoOnly = allFormats
-      .filter((f) => f.vcodec !== "none" && f.acodec === "none" && f.ext === "mp4")
+      .filter((f) => isCompatibleVideo(f) && f.acodec === "none" && f.ext === "mp4")
       .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
 
     const seenHeights = new Set<number>();
@@ -88,14 +115,16 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
       const h = f.height ?? 0;
       if (seenHeights.has(h)) continue;
       seenHeights.add(h);
-      formats.push({ formatStr: f.format_id!, qualityLabel: h ? `${h}p` : f.format_id!, needsMux: false });
+      if (!f.format_id) continue;
+      formats.push({ formatStr: f.format_id, qualityLabel: h ? `${h}p` : f.format_id, needsMux: false });
     }
 
     const muxHeights = [2160, 1440, 1080, 720, 480];
     for (const targetH of muxHeights) {
       if (seenHeights.has(targetH)) continue;
+      if (!audioId) continue;
       const vFmt = videoOnly.find((f) => f.height === targetH);
-      if (!vFmt) continue;
+      if (!vFmt?.format_id) continue;
       seenHeights.add(targetH);
       formats.push({ formatStr: `${vFmt.format_id}+${audioId}`, qualityLabel: `${targetH}p`, needsMux: true });
     }
@@ -117,37 +146,17 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
 }
 
 /**
- * Get the direct CDN URL for a non-muxed format (single combined stream).
- * Returns the first URL from yt-dlp's --get-url output.
- */
-export async function getYouTubeCdnUrl(url: string, formatStr: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      YT_DLP,
-      [
-        "--get-url",
-        "-f", formatStr,
-        "--no-playlist",
-        "--no-warnings",
-        "--no-check-certificates",
-        "--extractor-args", "youtube:player_client=ios,web",
-        url,
-      ],
-      { timeout: 30_000 }
-    );
-    const cdnUrl = stdout.trim().split("\n")[0];
-    return cdnUrl || null;
-  } catch (err) {
-    logger.error({ err, url, formatStr }, "youtube: getCdnUrl error");
-    return null;
-  }
-}
-
-/**
- * Download a muxed format (video+audio) to a temp file using yt-dlp + ffmpeg.
+ * Download and optionally mux the selected format to a temp file.
  * Returns the temp file path; caller must delete it after streaming.
  */
 export async function downloadYouTubeMuxed(url: string, formatStr: string): Promise<string> {
+  if (!isYouTubeUrl(url)) {
+    throw new Error("Only YouTube video URLs are supported.");
+  }
+  if (!/^(?:\d+|bestaudio)(?:\+(?:\d+|bestaudio))?$/.test(formatStr)) {
+    throw new Error("The requested YouTube format is invalid.");
+  }
+
   const tmpPath = join(
     tmpdir(),
     `yt_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`
@@ -157,21 +166,24 @@ export async function downloadYouTubeMuxed(url: string, formatStr: string): Prom
     [
       "-f", formatStr,
       "--merge-output-format", "mp4",
+      "--remux-video", "mp4",
       "--no-playlist",
       "--no-warnings",
-      "--no-check-certificates",
-      "--extractor-args", "youtube:player_client=ios,web",
       "-o", tmpPath,
       url,
     ],
     { timeout: 600_000 }
-  );
+  ).catch(async (err: unknown) => {
+    await unlinkAsync(tmpPath).catch(() => {});
+    throw err;
+  });
   return tmpPath;
 }
 
 export async function streamTempFile(tmpPath: string, res: import("express").Response): Promise<void> {
   try {
     const { size } = await statAsync(tmpPath);
+    if (size <= 0) throw new Error("The downloaded media file is empty.");
     res.setHeader("Content-Length", size);
     await new Promise<void>((resolve, reject) => {
       const rs = createReadStream(tmpPath);
@@ -188,32 +200,35 @@ export async function streamTempFile(tmpPath: string, res: import("express").Res
  * Returns two spawned processes: ytdlp (raw audio → stdout) and ffmpeg (mp3 → stdout).
  * Pipe: ytdlpProc.stdout → ffmpegProc.stdin → response.
  */
-export function spawnYouTubeAudioChain(url: string) {
-  const ytdlpProc = spawn(YT_DLP, [
-    "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
-    "--no-playlist",
-    "--no-warnings",
-    "--no-check-certificates",
-    "--extractor-args", "youtube:player_client=ios,web",
-    "-o", "-",
-    url,
-  ]);
+export async function downloadYouTubeAudio(url: string): Promise<string> {
+  if (!isYouTubeUrl(url)) {
+    throw new Error("Only YouTube video URLs are supported.");
+  }
 
-  const ffmpegProc = spawn("ffmpeg", [
-    "-i", "pipe:0",
-    "-f", "mp3",
-    "-ab", "192k",
-    "-vn",
-    "-loglevel", "error",
-    "pipe:1",
-  ]);
+  const tmpPath = join(
+    tmpdir(),
+    `yt_audio_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`
+  );
 
-  // Chain: yt-dlp stdout → ffmpeg stdin
-  ytdlpProc.stdout?.pipe(ffmpegProc.stdin!);
-  ytdlpProc.on("error", () => ffmpegProc.stdin?.destroy());
-  ytdlpProc.on("close", (code) => {
-    if (code !== 0) ffmpegProc.stdin?.end();
-  });
-
-  return { ytdlpProc, ffmpegProc };
+  try {
+    await execFileAsync(
+      YT_DLP,
+      [
+        "-f", "bestaudio/best",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "192K",
+        "--no-playlist",
+        "--no-warnings",
+        "-o", tmpPath,
+        url,
+      ],
+      { timeout: 600_000 }
+    );
+    return tmpPath;
+  } catch (err) {
+    await unlinkAsync(tmpPath).catch(() => {});
+    logger.error({ err, url }, "youtube: audio download error");
+    throw err;
+  }
 }

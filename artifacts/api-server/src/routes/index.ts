@@ -12,6 +12,7 @@ import showcaseRouter from "./showcase";
 import redirectRouter from "./redirect";
 import youtubeRouter from "./youtube";
 import facebookRouter from "./facebook";
+import twitterRouter from "./twitter";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(showcaseRouter);
 router.use(redirectRouter);
 router.use(youtubeRouter);
 router.use(facebookRouter);
+router.use(twitterRouter);
 
 export default router;
