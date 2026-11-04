@@ -7,6 +7,33 @@ const TIKWM_API = "https://www.tikwm.com/api/";
 
 const rateLimitMap = new Map<string, number>();
 const RATE_LIMIT_MS = 3000;
+const TIKWM_TIMEOUT_MS = 12_000;
+const TIKWM_MIN_INTERVAL_MS = 1100;
+const TIKWM_CACHE_TTL_MS = 60_000;
+
+interface TikwmApiResponse {
+  code: number;
+  msg: string;
+  data?: TikwmFullData;
+}
+
+class TikwmProviderError extends Error {
+  constructor(readonly status: number) {
+    super(`TikWM returned HTTP ${status}`);
+    this.name = "TikwmProviderError";
+  }
+}
+
+function isTikTokUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      (hostname === "tiktok.com" || hostname.endsWith(".tiktok.com"));
+  } catch {
+    return false;
+  }
+}
 
 interface TikwmFullData {
   id?: string;
@@ -57,6 +84,85 @@ interface TikwmFullData {
   height?: number;
 }
 
+const tikwmCache = new Map<string, { expiresAt: number; response: TikwmApiResponse }>();
+const tikwmRequests = new Map<string, Promise<TikwmApiResponse>>();
+let tikwmRequestQueue: Promise<void> = Promise.resolve();
+let lastTikwmRequestAt = 0;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestTikwm(url: string): Promise<Response> {
+  const request = tikwmRequestQueue.then(async () => {
+    const delay = lastTikwmRequestAt + TIKWM_MIN_INTERVAL_MS - Date.now();
+    if (delay > 0) await wait(delay);
+    lastTikwmRequestAt = Date.now();
+
+    return fetch(TIKWM_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://www.tikwm.com",
+        "Referer": "https://www.tikwm.com/",
+      },
+      body: new URLSearchParams({ url, hd: "1" }),
+      signal: AbortSignal.timeout(TIKWM_TIMEOUT_MS),
+    });
+  });
+
+  tikwmRequestQueue = request.then(() => undefined, () => undefined);
+  return request;
+}
+
+async function fetchTikwmData(url: string): Promise<TikwmApiResponse> {
+  const cached = tikwmCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) return cached.response;
+
+  const existingRequest = tikwmRequests.get(url);
+  if (existingRequest) return existingRequest;
+
+  const request = (async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await requestTikwm(url);
+      if (!response.ok) {
+        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+          await response.body?.cancel();
+          continue;
+        }
+        throw new TikwmProviderError(response.status);
+      }
+
+      const result = await response.json() as TikwmApiResponse;
+      if (result.code === 0 && result.data) {
+        if (tikwmCache.size >= 500) {
+          const oldestKey = tikwmCache.keys().next().value;
+          if (oldestKey) tikwmCache.delete(oldestKey);
+        }
+        tikwmCache.set(url, { expiresAt: Date.now() + TIKWM_CACHE_TTL_MS, response: result });
+        return result;
+      }
+
+      if (attempt === 0 && /rate limit|request\s*\/\s*second/i.test(result.msg)) {
+        await wait(TIKWM_MIN_INTERVAL_MS);
+        continue;
+      }
+      return result;
+    }
+
+    throw new Error("TikWM request retries were exhausted.");
+  })();
+
+  tikwmRequests.set(url, request);
+  try {
+    return await request;
+  } finally {
+    tikwmRequests.delete(url);
+  }
+}
+
 router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   const parsed = FetchTiktokVideoBody.safeParse(req.body);
   if (!parsed.success) {
@@ -66,7 +172,7 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
 
   const { url } = parsed.data;
 
-  if (!url || !url.includes("tiktok.com")) {
+  if (!isTikTokUrl(url)) {
     res.status(400).json({ error: "Invalid TikTok URL. Please paste a valid TikTok link." });
     return;
   }
@@ -81,23 +187,14 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   rateLimitMap.set(ip, now);
 
   try {
-    const response = await fetch(TIKWM_API, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (compatible; HutaoTik/1.0)",
-      },
-      body: new URLSearchParams({ url, hd: "1" }),
-    });
-
-    if (!response.ok) {
-      res.status(500).json({ error: "Failed to fetch video info. Please try again." });
-      return;
-    }
-
-    const data = await response.json() as { code: number; msg: string; data?: TikwmFullData };
+    const data = await fetchTikwmData(url);
 
     if (data.code !== 0 || !data.data) {
+      if (/rate limit|request\s*\/\s*second/i.test(data.msg)) {
+        res.setHeader("Retry-After", "2");
+        res.status(429).json({ error: data.msg });
+        return;
+      }
       res.status(400).json({ error: data.msg || "Could not fetch video. The link may be invalid or private." });
       return;
     }
@@ -158,6 +255,14 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
     });
   } catch (err) {
     req.log.error({ err }, "TikTok analyze error");
+    if (err instanceof TikwmProviderError) {
+      res.status(502).json({ error: "TikTok service is temporarily unavailable. Please try again shortly." });
+      return;
+    }
+    if (err instanceof Error && err.name === "TimeoutError") {
+      res.status(504).json({ error: "TikTok lookup timed out. Please try again." });
+      return;
+    }
     res.status(500).json({ error: "Failed to connect to TikTok service. Please try again." });
   }
 });
@@ -171,7 +276,7 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
 
   const { url } = parsed.data;
 
-  if (!url || !url.includes("tiktok.com")) {
+  if (!isTikTokUrl(url)) {
     res.status(400).json({ error: "Invalid TikTok URL. Please paste a valid TikTok link." });
     return;
   }
@@ -186,39 +291,14 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
   rateLimitMap.set(ip, now);
 
   try {
-    const response = await fetch(TIKWM_API, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (compatible; HutaoTik/1.0)",
-      },
-      body: new URLSearchParams({ url, hd: "1" }),
-    });
-
-    if (!response.ok) {
-      res.status(500).json({ error: "Failed to fetch video info. Please try again." });
-      return;
-    }
-
-    const data = await response.json() as {
-      code: number;
-      msg: string;
-      data?: {
-        id: string;
-        title: string;
-        play: string;
-        hdplay?: string;
-        wmplay?: string;
-        music: string;
-        music_info: { title: string; author: string; play: string };
-        author: { nickname: string; unique_id: string; avatar: string };
-        cover: string;
-        duration: number;
-        images?: string[];
-      };
-    };
+    const data = await fetchTikwmData(url);
 
     if (data.code !== 0 || !data.data) {
+      if (/rate limit|request\s*\/\s*second/i.test(data.msg)) {
+        res.setHeader("Retry-After", "2");
+        res.status(429).json({ error: data.msg });
+        return;
+      }
       res.status(400).json({ error: data.msg || "Could not fetch video. The link may be invalid or private." });
       return;
     }
@@ -229,9 +309,9 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
     res.json({
       id: d.id,
       title: d.title || "Untitled",
-      author: d.author.nickname || d.author.unique_id,
-      authorUsername: d.author.unique_id,
-      authorAvatar: d.author.avatar || null,
+      author: d.author?.nickname || d.author?.unique_id || "Unknown",
+      authorUsername: d.author?.unique_id ?? "unknown",
+      authorAvatar: d.author?.avatar || null,
       thumbnail: d.cover || null,
       duration: d.duration || null,
       downloadUrls: {
@@ -250,6 +330,14 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
     });
   } catch (err) {
     req.log.error({ err }, "TikTok fetch error");
+    if (err instanceof TikwmProviderError) {
+      res.status(502).json({ error: "TikTok service is temporarily unavailable. Please try again shortly." });
+      return;
+    }
+    if (err instanceof Error && err.name === "TimeoutError") {
+      res.status(504).json({ error: "TikTok lookup timed out. Please try again." });
+      return;
+    }
     res.status(500).json({ error: "Failed to connect to TikTok service. Please try again." });
   }
 });
