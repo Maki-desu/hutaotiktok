@@ -3,7 +3,7 @@ import { FetchTiktokVideoBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-const TIKWM_API = "https://www.tikwm.com/api/";
+const TIKWM_APIS = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"];
 
 const rateLimitMap = new Map<string, number>();
 const RATE_LIMIT_MS = 3000;
@@ -18,8 +18,8 @@ interface TikwmApiResponse {
 }
 
 class TikwmProviderError extends Error {
-  constructor(readonly status: number) {
-    super(`TikWM returned HTTP ${status}`);
+  constructor(readonly status: number, readonly host: string) {
+    super(`TikWM host ${host} returned HTTP ${status}`);
     this.name = "TikwmProviderError";
   }
 }
@@ -93,20 +93,21 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function requestTikwm(url: string): Promise<Response> {
+function requestTikwm(url: string, apiUrl: string): Promise<Response> {
   const request = tikwmRequestQueue.then(async () => {
     const delay = lastTikwmRequestAt + TIKWM_MIN_INTERVAL_MS - Date.now();
     if (delay > 0) await wait(delay);
     lastTikwmRequestAt = Date.now();
+    const origin = new URL(apiUrl).origin;
 
-    return fetch(TIKWM_API, {
+    return fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Origin": "https://www.tikwm.com",
-        "Referer": "https://www.tikwm.com/",
+        "Origin": origin,
+        "Referer": `${origin}/`,
       },
       body: new URLSearchParams({ url, hd: "1" }),
       signal: AbortSignal.timeout(TIKWM_TIMEOUT_MS),
@@ -126,13 +127,14 @@ async function fetchTikwmData(url: string): Promise<TikwmApiResponse> {
 
   const request = (async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await requestTikwm(url);
+      const apiUrl = TIKWM_APIS[attempt];
+      const response = await requestTikwm(url, apiUrl);
       if (!response.ok) {
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
-          await response.body?.cancel();
+        await response.body?.cancel();
+        if (attempt === 0) {
           continue;
         }
-        throw new TikwmProviderError(response.status);
+        throw new TikwmProviderError(response.status, new URL(apiUrl).host);
       }
 
       const result = await response.json() as TikwmApiResponse;
@@ -256,6 +258,7 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "TikTok analyze error");
     if (err instanceof TikwmProviderError) {
+      req.log.warn({ status: err.status, host: err.host }, "TikTok analyze providers failed");
       res.status(502).json({ error: "TikTok service is temporarily unavailable. Please try again shortly." });
       return;
     }
@@ -331,6 +334,7 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "TikTok fetch error");
     if (err instanceof TikwmProviderError) {
+      req.log.warn({ status: err.status, host: err.host }, "TikTok fetch providers failed");
       res.status(502).json({ error: "TikTok service is temporarily unavailable. Please try again shortly." });
       return;
     }
