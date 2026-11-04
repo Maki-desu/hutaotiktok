@@ -83,7 +83,10 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   try {
     const response = await fetch(TIKWM_API, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (compatible; HutaoTik/1.0)",
+      },
       body: new URLSearchParams({ url, hd: "1" }),
     });
 
@@ -185,7 +188,10 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
   try {
     const response = await fetch(TIKWM_API, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (compatible; HutaoTik/1.0)",
+      },
       body: new URLSearchParams({ url, hd: "1" }),
     });
 
