@@ -43,7 +43,7 @@ jobs:
         env:
           PORT: 5173
           BASE_PATH: /hutaotiktok/
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://hutaotiktok-api.onrender.com' }}
         run: pnpm run build
 
       - name: Upload Pages artifact
