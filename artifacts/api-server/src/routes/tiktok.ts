@@ -1,17 +1,7 @@
 import { Router, type IRouter } from "express";
-import { execFile } from "child_process";
-import { existsSync } from "fs";
-import { promisify } from "util";
-import { resolve } from "path";
 import { FetchTiktokVideoBody } from "@workspace/api-zod";
-import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-const execFileAsync = promisify(execFile);
-const YT_DLP = process.env.YT_DLP_PATH ?? [
-  resolve(process.cwd(), "yt-dlp"),
-  resolve(process.cwd(), "../../yt-dlp"),
-].find(existsSync) ?? resolve(process.cwd(), "yt-dlp");
 
 const TIKWM_APIS = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"];
 
@@ -92,33 +82,6 @@ interface TikwmFullData {
   format?: string;
   width?: number;
   height?: number;
-}
-
-interface YtDlpFormat {
-  url?: string;
-  height?: number;
-  vcodec?: string;
-  acodec?: string;
-  tbr?: number;
-}
-
-interface YtDlpTikTokData {
-  id?: string;
-  title?: string;
-  description?: string;
-  thumbnail?: string;
-  uploader?: string;
-  uploader_id?: string;
-  uploader_url?: string;
-  channel_follower_count?: number;
-  duration?: number;
-  timestamp?: number;
-  view_count?: number;
-  like_count?: number;
-  comment_count?: number;
-  repost_count?: number;
-  formats?: YtDlpFormat[];
-  url?: string;
 }
 
 const tikwmCache = new Map<string, { expiresAt: number; response: TikwmApiResponse }>();
@@ -202,79 +165,6 @@ async function fetchTikwmData(url: string): Promise<TikwmApiResponse> {
   }
 }
 
-async function fetchTikTokWithYtDlp(url: string): Promise<TikwmApiResponse | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      YT_DLP,
-      ["--dump-single-json", "--no-playlist", "--no-warnings", "--socket-timeout", "12", url],
-      { timeout: 18_000, maxBuffer: 5 * 1024 * 1024 }
-    );
-    const video = JSON.parse(stdout) as YtDlpTikTokData;
-    const hasAudio = (format: YtDlpFormat) =>
-      typeof format.acodec === "string" && format.acodec !== "none";
-    const videoFormats = (video.formats ?? [])
-      .filter((format) => format.url && format.vcodec && format.vcodec !== "none")
-      .sort((a, b) =>
-        (b.height ?? 0) - (a.height ?? 0) ||
-        Number(hasAudio(b)) - Number(hasAudio(a)) ||
-        (b.tbr ?? 0) - (a.tbr ?? 0)
-      );
-    const hdUrl = videoFormats[0]?.url ?? video.url;
-    const normalUrl = videoFormats.find(hasAudio)?.url ?? hdUrl;
-
-    if (!video.id || !hdUrl) {
-      return null;
-    }
-
-    const authorName = video.uploader ?? video.uploader_id ?? "Unknown";
-    const authorUsername = video.uploader_id ??
-      video.uploader_url?.match(/@([^/]+)/)?.[1] ??
-      "unknown";
-
-    return {
-      code: 0,
-      msg: "ok",
-      data: {
-        id: video.id,
-        title: video.title ?? video.description ?? "Untitled",
-        play: normalUrl,
-        hdplay: hdUrl,
-        cover: video.thumbnail,
-        duration: video.duration,
-        create_time: video.timestamp,
-        play_count: video.view_count,
-        digg_count: video.like_count,
-        comment_count: video.comment_count,
-        share_count: video.repost_count,
-        author: {
-          unique_id: authorUsername,
-          nickname: authorName,
-          followers: video.channel_follower_count,
-        },
-      },
-    };
-  } catch (err) {
-    logger.error({ err }, "TikTok yt-dlp fallback failed");
-    return null;
-  }
-}
-
-async function fetchTikTokData(url: string): Promise<TikwmApiResponse> {
-  try {
-    return await fetchTikwmData(url);
-  } catch (err) {
-    if (!(err instanceof TikwmProviderError)) {
-      throw err;
-    }
-
-    const fallback = await fetchTikTokWithYtDlp(url);
-    if (fallback) {
-      return fallback;
-    }
-    throw err;
-  }
-}
-
 router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   const parsed = FetchTiktokVideoBody.safeParse(req.body);
   if (!parsed.success) {
@@ -299,7 +189,7 @@ router.post("/tiktok/analyze", async (req, res): Promise<void> => {
   rateLimitMap.set(ip, now);
 
   try {
-    const data = await fetchTikTokData(url);
+    const data = await fetchTikwmData(url);
 
     if (data.code !== 0 || !data.data) {
       if (/rate limit|request\s*\/\s*second/i.test(data.msg)) {
@@ -404,7 +294,7 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
   rateLimitMap.set(ip, now);
 
   try {
-    const data = await fetchTikTokData(url);
+    const data = await fetchTikwmData(url);
 
     if (data.code !== 0 || !data.data) {
       if (/rate limit|request\s*\/\s*second/i.test(data.msg)) {
