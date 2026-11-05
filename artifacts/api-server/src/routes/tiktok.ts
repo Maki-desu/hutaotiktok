@@ -4,6 +4,7 @@ import { promisify } from "util";
 import { resolve } from "path";
 import { Router, type IRouter } from "express";
 import { FetchTiktokVideoBody } from "@workspace/api-zod";
+import { cobaltFetch, hasConfiguredCobaltApi } from "../lib/cobalt";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -276,6 +277,41 @@ async function fetchTikTokWithYtDlp(url: string): Promise<TikwmApiResponse | nul
   }
 }
 
+async function fetchTikTokWithCobalt(url: string): Promise<TikwmApiResponse | null> {
+  const result = await cobaltFetch(url, {
+    apiUrl: process.env.COBALT_API_URL,
+    apiKey: process.env.COBALT_API_KEY,
+    timeoutMs: 75_000,
+  });
+  if (!result) return null;
+
+  const videoId = new URL(url).pathname.match(/\/video\/(\d+)/)?.[1] ??
+    result.filename?.match(/\d{10,}/)?.[0];
+  if (!videoId) {
+    logger.warn({ url, filename: result.filename }, "TikTok Cobalt response did not include a video ID");
+    return null;
+  }
+
+  const username = new URL(url).pathname.match(/@([^/]+)/)?.[1] ?? "unknown";
+  const title = result.filename?.replace(/\.[^.]+$/, "") || "TikTok video";
+
+  return {
+    code: 0,
+    msg: "ok",
+    data: {
+      id: videoId,
+      title,
+      play: result.url,
+      hdplay: result.url,
+      format: "mp4",
+      author: {
+        unique_id: username,
+        nickname: username === "unknown" ? "Unknown" : username,
+      },
+    },
+  };
+}
+
 async function fetchTikTokData(url: string): Promise<TikwmApiResponse> {
   let tikwmResult: TikwmApiResponse | null = null;
   let tikwmError: unknown;
@@ -294,6 +330,13 @@ async function fetchTikTokData(url: string): Promise<TikwmApiResponse> {
 
   const fallback = await fetchTikTokWithYtDlp(url);
   if (fallback) return fallback;
+
+  if (hasConfiguredCobaltApi()) {
+    logger.warn("TikTok yt-dlp lookup failed; trying self-hosted Cobalt");
+    const cobaltFallback = await fetchTikTokWithCobalt(url);
+    if (cobaltFallback) return cobaltFallback;
+  }
+
   if (tikwmResult) return tikwmResult;
   throw tikwmError;
 }

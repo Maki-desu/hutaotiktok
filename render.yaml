@@ -1,3 +1,9 @@
+envVarGroups:
+  - name: hutaotik-cobalt
+    envVars:
+      - key: COBALT_API_KEY
+        sync: false
+
 services:
   - type: web
     name: hutaotiktok-api
@@ -12,6 +18,26 @@ services:
       - key: PORT
         value: "10000"
       - fromGroup: taotik
+      - fromGroup: hutaotik-cobalt
+      - key: COBALT_API_URL
+        value: https://hutaotiktok-cobalt.onrender.com/
+
+  - type: web
+    name: hutaotiktok-cobalt
+    runtime: docker
+    plan: free
+    dockerfilePath: ./artifacts/cobalt/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: API_URL
+        value: https://hutaotiktok-cobalt.onrender.com/
+      - key: API_PORT
+        value: "10000"
+      - key: API_KEY_URL
+        value: file:///tmp/cobalt-keys.json
+      - key: API_AUTH_REQUIRED
+        value: "1"
+      - fromGroup: hutaotik-cobalt
 
 databases:
   - name: hutaotiktok-db

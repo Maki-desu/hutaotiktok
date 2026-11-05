@@ -8,6 +8,10 @@ export interface CobaltResult {
   filename: string | null;
 }
 
+export function hasConfiguredCobaltApi(): boolean {
+  return Boolean(process.env.COBALT_API_URL?.trim() && process.env.COBALT_API_KEY?.trim());
+}
+
 interface CobaltResponse {
   status: string;
   url?: string;
@@ -22,19 +26,28 @@ export async function cobaltFetch(
     downloadMode?: "auto" | "audio" | "mute";
     audioFormat?: string;
     videoQuality?: string;
+    timeoutMs?: number;
+    apiUrl?: string;
+    apiKey?: string;
   } = {}
 ): Promise<CobaltResult | null> {
   try {
-    const res = await fetch(COBALT_API, {
+    const apiUrl = opts.apiUrl?.trim() || COBALT_API;
+    const apiKey = opts.apiKey?.trim();
+    const res = await fetch(apiUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(apiKey ? { Authorization: `Api-Key ${apiKey}` } : {}),
+      },
       body: JSON.stringify({
         url,
         downloadMode: opts.downloadMode ?? "auto",
         ...(opts.audioFormat ? { audioFormat: opts.audioFormat } : {}),
         ...(opts.videoQuality ? { videoQuality: opts.videoQuality } : {}),
       }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
     });
 
     if (!res.ok) {
