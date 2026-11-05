@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { FetchTiktokVideoBody } from "@workspace/api-zod";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
@@ -7,7 +8,7 @@ const TIKWM_APIS = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"];
 
 const rateLimitMap = new Map<string, number>();
 const RATE_LIMIT_MS = 3000;
-const TIKWM_TIMEOUT_MS = 12_000;
+const TIKWM_TIMEOUT_MS = 6_000;
 const TIKWM_MIN_INTERVAL_MS = 1100;
 const TIKWM_CACHE_TTL_MS = 60_000;
 
@@ -126,34 +127,53 @@ async function fetchTikwmData(url: string): Promise<TikwmApiResponse> {
   if (existingRequest) return existingRequest;
 
   const request = (async () => {
+    let lastResult: TikwmApiResponse | null = null;
+    let lastError: unknown;
+
     for (let attempt = 0; attempt < 2; attempt++) {
       const apiUrl = TIKWM_APIS[attempt];
-      const response = await requestTikwm(url, apiUrl);
-      if (!response.ok) {
-        await response.body?.cancel();
+      try {
+        const response = await requestTikwm(url, apiUrl);
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new TikwmProviderError(response.status, new URL(apiUrl).host);
+        }
+
+        const result = await response.json() as TikwmApiResponse;
+        if (result.code === 0 && result.data) {
+          if (tikwmCache.size >= 500) {
+            const oldestKey = tikwmCache.keys().next().value;
+            if (oldestKey) tikwmCache.delete(oldestKey);
+          }
+          tikwmCache.set(url, { expiresAt: Date.now() + TIKWM_CACHE_TTL_MS, response: result });
+          return result;
+        }
+
+        lastResult = result;
         if (attempt === 0) {
-          continue;
+          logger.warn(
+            { code: result.code, msg: result.msg, host: new URL(apiUrl).host },
+            "TikTok provider returned an error; trying backup"
+          );
+          if (/rate limit|request\s*\/\s*second/i.test(result.msg)) {
+            await wait(TIKWM_MIN_INTERVAL_MS);
+          }
         }
-        throw new TikwmProviderError(response.status, new URL(apiUrl).host);
-      }
-
-      const result = await response.json() as TikwmApiResponse;
-      if (result.code === 0 && result.data) {
-        if (tikwmCache.size >= 500) {
-          const oldestKey = tikwmCache.keys().next().value;
-          if (oldestKey) tikwmCache.delete(oldestKey);
+      } catch (err) {
+        lastError = err;
+        if (attempt === 1) {
+          if (lastResult) return lastResult;
+          throw err;
         }
-        tikwmCache.set(url, { expiresAt: Date.now() + TIKWM_CACHE_TTL_MS, response: result });
-        return result;
+        logger.warn(
+          { err, host: new URL(apiUrl).host },
+          "TikTok provider request failed; trying backup"
+        );
       }
-
-      if (attempt === 0 && /rate limit|request\s*\/\s*second/i.test(result.msg)) {
-        await wait(TIKWM_MIN_INTERVAL_MS);
-        continue;
-      }
-      return result;
     }
 
+    if (lastResult) return lastResult;
+    if (lastError) throw lastError;
     throw new Error("TikWM request retries were exhausted.");
   })();
 
