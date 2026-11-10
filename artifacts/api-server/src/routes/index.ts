@@ -13,6 +13,8 @@ import redirectRouter from "./redirect";
 import youtubeRouter from "./youtube";
 import facebookRouter from "./facebook";
 import twitterRouter from "./twitter";
+import pinterestRouter from "./pinterest";
+import instagramRouter from "./instagram";
 
 const router: IRouter = Router();
 
@@ -30,5 +32,7 @@ router.use(redirectRouter);
 router.use(youtubeRouter);
 router.use(facebookRouter);
 router.use(twitterRouter);
+router.use(pinterestRouter);
+router.use(instagramRouter);
 
 export default router;
