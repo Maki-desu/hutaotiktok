@@ -13,6 +13,7 @@ import redirectRouter from "./redirect";
 import youtubeRouter from "./youtube";
 import facebookRouter from "./facebook";
 import twitterRouter from "./twitter";
+import appUpdatesRouter from "./app-updates";
 import pinterestRouter from "./pinterest";
 import instagramRouter from "./instagram";
 
@@ -32,6 +33,7 @@ router.use(redirectRouter);
 router.use(youtubeRouter);
 router.use(facebookRouter);
 router.use(twitterRouter);
+router.use(appUpdatesRouter);
 router.use(pinterestRouter);
 router.use(instagramRouter);
 

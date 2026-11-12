@@ -4,3 +4,5 @@ export * from "./monitored_accounts";
 export * from "./post_notifications";
 export * from "./download_history";
 export * from "./showcase_videos";
+export * from "./app_releases";
+export * from "./app_update_devices";
