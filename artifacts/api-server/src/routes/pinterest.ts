@@ -8,14 +8,14 @@ const router: IRouter = Router();
 router.get("/pinterest/info", async (req, res): Promise<void> => {
   const url = req.query.url;
   if (typeof url !== "string" || !isPinterestUrl(url)) {
-    res.status(400).json({ error: "A valid Pinterest video URL is required." });
+    res.status(400).json({ error: "A valid Pinterest Pin or pin.it URL is required." });
     return;
   }
 
   const info = await fetchPinterestInfo(url);
   if (!info) {
     res.status(400).json({
-      error: "Could not fetch this Pinterest video. It may be private, unavailable, or unsupported.",
+      error: "Could not fetch this Pinterest Pin. It may be private, unavailable, or unsupported.",
     });
     return;
   }
@@ -26,7 +26,7 @@ router.get("/pinterest/info", async (req, res): Promise<void> => {
 router.get("/pinterest/download", async (req, res): Promise<void> => {
   const url = req.query.url;
   if (typeof url !== "string" || !isPinterestUrl(url)) {
-    res.status(400).json({ error: "A valid Pinterest video URL is required." });
+    res.status(400).json({ error: "A valid Pinterest Pin or pin.it URL is required." });
     return;
   }
 
@@ -37,17 +37,17 @@ router.get("/pinterest/download", async (req, res): Promise<void> => {
     .substring(0, 80) || "Pinterest Video";
 
   try {
-    const tmpPath = await downloadPinterestVideo(url);
-    res.setHeader("Content-Type", "video/mp4");
+    const file = await downloadPinterestVideo(url);
+    res.setHeader("Content-Type", file.contentType);
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename*=UTF-8''${encodeURIComponent(`${safeTitle}.mp4`)}`,
+      `attachment; filename*=UTF-8''${encodeURIComponent(`${safeTitle}.${file.extension}`)}`,
     );
-    await streamTempFile(tmpPath, res);
+    await streamTempFile(file.tmpPath, res);
   } catch (err) {
     logger.error({ err, url }, "pinterest: download route error");
     if (!res.headersSent) {
-      res.status(500).json({ error: "The Pinterest video download failed. Please try again later." });
+      res.status(500).json({ error: "The Pinterest download failed. Please try again later." });
     } else {
       res.destroy(err instanceof Error ? err : undefined);
     }

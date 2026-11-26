@@ -27,6 +27,9 @@ import type {
   Announcement,
   AnnouncementInput,
   AnnouncementUpdate,
+  AppUpdateDeviceInput,
+  AppUpdatePublishResult,
+  AppUpdateUploadInput,
   DeleteResponse,
   DownloadRecord,
   DownloadRecordInput,
@@ -36,6 +39,7 @@ import type {
   MonitoredAccountInput,
   PostNotification,
   PublicSettings,
+  PublishedAppUpdate,
   TiktokAnalysis,
   TiktokFetchInput,
   TiktokVideoInfo,
@@ -421,6 +425,307 @@ export const useAdminLogin = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getAdminLoginMutationOptions(options));
+    }
+
+export const getPublishAppUpdateUrl = () => {
+
+
+
+
+  return `/api/admin/app-updates`
+}
+
+/**
+ * @summary Publish an Android app update
+ */
+export const publishAppUpdate = async (appUpdateUploadInput: AppUpdateUploadInput, options?: RequestInit): Promise<AppUpdatePublishResult> => {
+    const formData = new FormData();
+formData.append(`versionCode`, appUpdateUploadInput.versionCode.toString())
+formData.append(`versionName`, appUpdateUploadInput.versionName);
+formData.append(`changelog`, appUpdateUploadInput.changelog);
+formData.append(`apk`, appUpdateUploadInput.apk);
+
+  return customFetch<AppUpdatePublishResult>(getPublishAppUpdateUrl(),
+  {
+    ...options,
+    method: 'POST'
+    ,
+    body:
+      formData,
+  }
+);}
+
+
+
+
+export const getPublishAppUpdateMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof publishAppUpdate>>, TError,{data: BodyType<AppUpdateUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof publishAppUpdate>>, TError,{data: BodyType<AppUpdateUploadInput>}, TContext> => {
+
+const mutationKey = ['publishAppUpdate'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof publishAppUpdate>>, {data: BodyType<AppUpdateUploadInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  publishAppUpdate(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PublishAppUpdateMutationResult = NonNullable<Awaited<ReturnType<typeof publishAppUpdate>>>
+    export type PublishAppUpdateMutationBody = BodyType<AppUpdateUploadInput>
+    export type PublishAppUpdateMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Publish an Android app update
+ */
+export const usePublishAppUpdate = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof publishAppUpdate>>, TError,{data: BodyType<AppUpdateUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof publishAppUpdate>>,
+        TError,
+        {data: BodyType<AppUpdateUploadInput>},
+        TContext
+      > => {
+      return useMutation(getPublishAppUpdateMutationOptions(options));
+    }
+
+export const getGetLatestAppUpdateUrl = () => {
+
+
+
+
+  return `/api/app-updates/latest`
+}
+
+/**
+ * @summary Get the latest published Android release
+ */
+export const getLatestAppUpdate = async ( options?: RequestInit): Promise<PublishedAppUpdate> => {
+
+  return customFetch<PublishedAppUpdate>(getGetLatestAppUpdateUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLatestAppUpdateQueryKey = () => {
+    return [
+    `/api/app-updates/latest`
+    ] as const;
+    }
+
+
+export const getGetLatestAppUpdateQueryOptions = <TData = Awaited<ReturnType<typeof getLatestAppUpdate>>, TError = ErrorType<ErrorResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLatestAppUpdate>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLatestAppUpdateQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLatestAppUpdate>>> = ({ signal }) => getLatestAppUpdate({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLatestAppUpdate>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLatestAppUpdateQueryResult = NonNullable<Awaited<ReturnType<typeof getLatestAppUpdate>>>
+export type GetLatestAppUpdateQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Get the latest published Android release
+ */
+
+export function useGetLatestAppUpdate<TData = Awaited<ReturnType<typeof getLatestAppUpdate>>, TError = ErrorType<ErrorResponse>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLatestAppUpdate>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLatestAppUpdateQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getDownloadAppUpdateUrl = (id: number,) => {
+
+
+
+
+  return `/api/app-updates/${id}/download`
+}
+
+/**
+ * @summary Download a published Android APK
+ */
+export const downloadAppUpdate = async (id: number, options?: RequestInit): Promise<Blob> => {
+
+  return customFetch<Blob>(getDownloadAppUpdateUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getDownloadAppUpdateQueryKey = (id: number,) => {
+    return [
+    `/api/app-updates/${id}/download`
+    ] as const;
+    }
+
+
+export const getDownloadAppUpdateQueryOptions = <TData = Awaited<ReturnType<typeof downloadAppUpdate>>, TError = ErrorType<ErrorResponse>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof downloadAppUpdate>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getDownloadAppUpdateQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof downloadAppUpdate>>> = ({ signal }) => downloadAppUpdate(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof downloadAppUpdate>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type DownloadAppUpdateQueryResult = NonNullable<Awaited<ReturnType<typeof downloadAppUpdate>>>
+export type DownloadAppUpdateQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Download a published Android APK
+ */
+
+export function useDownloadAppUpdate<TData = Awaited<ReturnType<typeof downloadAppUpdate>>, TError = ErrorType<ErrorResponse>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof downloadAppUpdate>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getDownloadAppUpdateQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getRegisterAppUpdateDeviceUrl = () => {
+
+
+
+
+  return `/api/app-updates/register-device`
+}
+
+/**
+ * @summary Register a device for Android release push notifications
+ */
+export const registerAppUpdateDevice = async (appUpdateDeviceInput: AppUpdateDeviceInput, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getRegisterAppUpdateDeviceUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      appUpdateDeviceInput,)
+  }
+);}
+
+
+
+
+export const getRegisterAppUpdateDeviceMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof registerAppUpdateDevice>>, TError,{data: BodyType<AppUpdateDeviceInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof registerAppUpdateDevice>>, TError,{data: BodyType<AppUpdateDeviceInput>}, TContext> => {
+
+const mutationKey = ['registerAppUpdateDevice'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof registerAppUpdateDevice>>, {data: BodyType<AppUpdateDeviceInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  registerAppUpdateDevice(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RegisterAppUpdateDeviceMutationResult = NonNullable<Awaited<ReturnType<typeof registerAppUpdateDevice>>>
+    export type RegisterAppUpdateDeviceMutationBody = BodyType<AppUpdateDeviceInput>
+    export type RegisterAppUpdateDeviceMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Register a device for Android release push notifications
+ */
+export const useRegisterAppUpdateDevice = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof registerAppUpdateDevice>>, TError,{data: BodyType<AppUpdateDeviceInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof registerAppUpdateDevice>>,
+        TError,
+        {data: BodyType<AppUpdateDeviceInput>},
+        TContext
+      > => {
+      return useMutation(getRegisterAppUpdateDeviceMutationOptions(options));
     }
 
 export const getAdminListAnnouncementsUrl = () => {

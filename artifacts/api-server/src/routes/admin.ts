@@ -5,7 +5,12 @@ import {
   AdminLoginBody,
   UpdateAdminSettingsBody,
 } from "@workspace/api-zod";
-import { requireAdmin, ADMIN_PASSWORD, ADMIN_TOKEN } from "../middlewares/admin";
+import {
+  requireAdmin,
+  ADMIN_PASSWORD,
+  ADMIN_SESSION_SECRET,
+  createAdminToken,
+} from "../middlewares/admin";
 
 const router: IRouter = Router();
 
@@ -16,12 +21,17 @@ router.post("/admin/login", async (req, res): Promise<void> => {
     return;
   }
 
+  if (!ADMIN_PASSWORD || !ADMIN_SESSION_SECRET || ADMIN_SESSION_SECRET.length < 32) {
+    res.status(503).json({ error: "Admin login is not securely configured on the server." });
+    return;
+  }
+
   if (parsed.data.password !== ADMIN_PASSWORD) {
     res.status(401).json({ error: "Invalid password" });
     return;
   }
 
-  res.json({ token: ADMIN_TOKEN, success: true });
+  res.json({ token: createAdminToken(), success: true });
 });
 
 async function getOrCreateSettings() {
@@ -29,7 +39,7 @@ async function getOrCreateSettings() {
   if (existing.length > 0) return existing[0];
   const [created] = await db.insert(adminSettingsTable).values({
     siteTitle: "HutaoTik",
-    footerText: "Powered by HutaoTik",
+    footerText: "Powered by Makisensei",
     downloadsEnabled: true,
     alertsEnabled: true,
     historyEnabled: true,

@@ -1,12 +1,21 @@
-import { ReactNode, useState, useCallback, type MouseEvent } from "react";
-import { Link, useLocation } from "wouter";
+import { ReactNode, useState, useCallback, useEffect, type MouseEvent } from "react";
+import { useLocation } from "wouter";
 import {
   useGetPublicSettings,
   getGetPublicSettingsQueryKey,
-  useGetUnreadNotificationCount,
-  getGetUnreadNotificationCountQueryKey,
 } from "@workspace/api-client-react";
-import { Settings, Bell, Clock, Clapperboard, LockKeyhole, ExternalLink, BarChart2 } from "lucide-react";
+import { Coffee, Copy, ExternalLink, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { loadBrandingImages, onBrandingChanged } from "@/lib/app-branding";
 import logoFallback from "@assets/b52ef5e5af44af36517e4b1568bff58a_1780063742037.jpg";
 import bannerFallback from "@assets/4fb7478f6043ee9849d2fbb866bc6489_1780063761840.jpg";
 
@@ -79,30 +88,70 @@ function GhostOrbit({ logoSrc }: { logoSrc: string }) {
   );
 }
 
+function CoffeeSupportDialogContent({ onCopy }: { onCopy: () => Promise<void> }) {
+  return (
+    <DialogContent className="max-w-sm rounded-2xl border-border bg-card">
+      <DialogHeader className="items-center text-center">
+        <span className="mb-1 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary">
+          <Coffee className="h-6 w-6" />
+        </span>
+        <DialogTitle>Thank you for your support!</DialogTitle>
+        <DialogDescription>
+          Send a little support through GCash. Open GCash and choose Send Money.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-center">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          GCash number
+        </p>
+        <p className="mt-1 select-all font-mono text-lg font-bold tracking-wide text-primary">
+          +63 951 842 0452
+        </p>
+      </div>
+      <Button type="button" variant="outline" onClick={onCopy} className="w-full">
+        <Copy className="h-4 w-4" />
+        Copy number
+      </Button>
+    </DialogContent>
+  );
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
+  const { toast } = useToast();
 
   const { data: publicSettings } = useGetPublicSettings({
     query: { queryKey: getGetPublicSettingsQueryKey(), refetchInterval: 30_000 },
   });
 
-  const { data: unreadCountData } = useGetUnreadNotificationCount({
-    query: { queryKey: getGetUnreadNotificationCountQueryKey(), refetchInterval: 10_000 },
+  const [brandingImages, setBrandingImages] = useState<{ logo: string | null; banner: string | null }>({
+    logo: null,
+    banner: null,
   });
+  useEffect(() => {
+    let mounted = true;
+    const refreshBranding = () => {
+      void loadBrandingImages()
+        .then((images) => {
+          if (mounted) setBrandingImages({ logo: images.logo, banner: images.banner });
+        })
+        .catch((error: unknown) => {
+          console.error("Could not load saved app branding images.", error);
+        });
+    };
+    refreshBranding();
+    const unsubscribe = onBrandingChanged(refreshBranding);
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
-  const unreadCount = unreadCountData?.count || 0;
-  const logoSrc = publicSettings?.logoUrl || logoFallback;
-  const bannerSrc = publicSettings?.bannerUrl || bannerFallback;
-
-  const downloadsEnabled = publicSettings?.downloadsEnabled !== false;
-  const alertsEnabled    = publicSettings?.alertsEnabled    !== false;
-  const historyEnabled   = publicSettings?.historyEnabled   !== false;
-  const showcaseEnabled  = publicSettings?.showcaseEnabled  !== false;
+  const logoSrc = brandingImages.logo || publicSettings?.logoUrl || logoFallback;
+  const bannerSrc = brandingImages.banner || publicSettings?.bannerUrl || bannerFallback;
 
   const profileUrl = normalizeUrl(publicSettings?.tiktokProfileUrl);
 
-  // Route through our redirect endpoint so same-origin navigation bypasses
-  // iframe sandbox pop-up restrictions and works in all deployment contexts
   const profileRedirectUrl = profileUrl
     ? `/api/redirect?url=${encodeURIComponent(profileUrl)}`
     : undefined;
@@ -111,130 +160,104 @@ export function Layout({ children }: { children: ReactNode }) {
     e.preventDefault();
     if (!profileRedirectUrl) return;
     const w = window.open(profileRedirectUrl, "_blank", "noopener,noreferrer");
-    // If popup was blocked, fall back to same-tab navigation
     if (!w) window.location.href = profileRedirectUrl;
   };
 
+  const navigateTo = (path: string) => {
+    window.location.hash = path;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  };
+
+  const handleCopyGcashNumber = async () => {
+    try {
+      await navigator.clipboard.writeText("+639518420452");
+      toast({
+        title: "GCash number copied",
+        description: "Open GCash and send your support to +63 951 842 0452.",
+      });
+    } catch (error) {
+      console.error("Could not copy the GCash number.", error);
+      toast({
+        title: "Could not copy the number",
+        description: "Please copy +63 951 842 0452 manually.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
-    <div className="min-h-[100dvh] flex flex-col bg-background text-foreground">
+    <div className="app-shell min-h-[100dvh] flex flex-col bg-background text-foreground">
 
       {/* ── Hero / Banner ──────────────────────────────── */}
       <div className="relative w-full" style={{ minHeight: "220px", overflow: "visible" }}>
         <div className="absolute inset-0 overflow-hidden">
           <img src={bannerSrc} alt="banner" className="w-full h-full object-cover object-center" />
-          <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/80" />
+          <div aria-hidden="true" className="hero-banner-depth absolute inset-0" />
+          <div aria-hidden="true" className="hero-banner-scrim absolute inset-0" />
         </div>
 
         {/* Header row */}
-        <header className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2">
-          <Link href="/" className="flex items-center gap-3 group">
+        <header className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2 gap-2">
+          <button
+            type="button"
+            onClick={() => navigateTo("/")}
+            className="flex items-center gap-3 group bg-transparent border-none cursor-pointer text-left shrink-0"
+          >
             <GhostOrbit logoSrc={logoSrc} />
             <span className="text-white font-bold text-lg font-syne tracking-tight leading-none transition-colors duration-200 group-hover:text-primary">
               {publicSettings?.siteTitle || "HutaoTik"}
             </span>
-          </Link>
+          </button>
 
-          <nav className="flex items-center gap-1">
-
-            {/* Analyze */}
-            <Link
-              href="/analyze"
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
-                publicSettings?.analyzeEnabled === false ? "opacity-40" : ""
-              } ${
-                location === "/analyze"
-                  ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white/70 hover:text-white hover:bg-white/8"
+          <nav className="flex items-center gap-1.5 flex-wrap justify-end">
+            {/* Taotools */}
+            <button
+              type="button"
+              onClick={() => navigateTo("/taotools")}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+                location === "/taotools"
+                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
+                  : "text-white"
               }`}
-              data-testid="nav-analyze"
-              title="TikTok Video Analysis"
+              data-testid="nav-taotools"
+              title="Tao Tools Suite"
             >
-              <BarChart2 className="w-4 h-4" />
-              <span className="hidden sm:inline">Analyze</span>
-              {publicSettings?.analyzeEnabled === false && (
-                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-zinc-700 border border-black/40 flex items-center justify-center">
-                  <LockKeyhole className="w-2 h-2 text-zinc-300" />
-                </span>
-              )}
-            </Link>
+              <Wand2 className="w-3.5 h-3.5 text-primary animate-pulse" />
+              <span>Taotools</span>
+            </button>
 
-            {/* Showcase */}
-            <Link
-              href="/showcase"
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
-                !showcaseEnabled ? "opacity-40" : ""
-              } ${
-                location === "/showcase"
-                  ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white/70 hover:text-white hover:bg-white/8"
+            {/* Updates */}
+            <button
+              type="button"
+              onClick={() => navigateTo("/updates")}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+                location === "/updates"
+                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
+                  : "text-white"
               }`}
-              data-testid="nav-showcase"
+              data-testid="nav-updates"
+              title="App Version Updates & Changelog"
             >
-              <Clapperboard className="w-4 h-4" />
-              <span className="hidden sm:inline">Showcase</span>
-              {!showcaseEnabled && (
-                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-zinc-700 border border-black/40 flex items-center justify-center">
-                  <LockKeyhole className="w-2 h-2 text-zinc-300" />
-                </span>
-              )}
-            </Link>
+              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <span>Updates</span>
+            </button>
 
-            {/* History */}
-            <Link
-              href="/history"
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
-                !historyEnabled ? "opacity-40" : ""
-              } ${
-                location === "/history"
-                  ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white/70 hover:text-white hover:bg-white/8"
+            {/* Settings */}
+            <button
+              type="button"
+              onClick={() => navigateTo("/settings")}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+                location === "/settings"
+                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
+                  : "text-white"
               }`}
-              data-testid="nav-history"
+              data-testid="nav-settings"
+              title="App Settings"
+              aria-current={location === "/settings" ? "page" : undefined}
             >
-              <Clock className="w-4 h-4" />
-              <span className="hidden sm:inline">History</span>
-              {!historyEnabled && (
-                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-zinc-700 border border-black/40 flex items-center justify-center">
-                  <LockKeyhole className="w-2 h-2 text-zinc-300" />
-                </span>
-              )}
-            </Link>
-
-            {/* Alerts */}
-            <Link
-              href="/notifications"
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 active:scale-95 ${
-                !alertsEnabled ? "opacity-40" : ""
-              } ${
-                location === "/notifications"
-                  ? "text-primary drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white/70 hover:text-white hover:bg-white/8"
-              }`}
-              data-testid="nav-notifications"
-            >
-              <Bell className="w-4 h-4" />
-              <span className="hidden sm:inline">Alerts</span>
-              {alertsEnabled && unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 bg-primary text-[9px] font-bold text-black px-1 py-px rounded-full min-w-[16px] text-center leading-none animate-bounce">
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </span>
-              )}
-              {!alertsEnabled && (
-                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-zinc-700 border border-black/40 flex items-center justify-center">
-                  <LockKeyhole className="w-2 h-2 text-zinc-300" />
-                </span>
-              )}
-            </Link>
-
-            {/* Admin gear — rotates 90° on hover */}
-            <Link
-              href="/admin"
-              className="flex items-center justify-center w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 transition-all duration-300 hover:scale-105 hover:rotate-90 active:scale-95 ml-1"
-              data-testid="nav-admin"
-              title="Admin Dashboard"
-            >
-              <Settings className="w-4 h-4 text-white/80" />
-            </Link>
+              <SettingsIcon className="w-3.5 h-3.5 text-primary" />
+              <span>Settings</span>
+            </button>
           </nav>
         </header>
 
@@ -281,11 +304,39 @@ export function Layout({ children }: { children: ReactNode }) {
         {children}
       </main>
 
+      <Dialog>
+        <DialogTrigger asChild>
+          <button
+            type="button"
+            className="fixed left-4 z-50 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md transition hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95"
+            style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+          >
+            <Coffee className="h-4 w-4 text-primary" />
+            <span>Buy me a coffee</span>
+          </button>
+        </DialogTrigger>
+        <CoffeeSupportDialogContent onCopy={handleCopyGcashNumber} />
+      </Dialog>
+
       {/* ── Footer ───────────────────────────────────── */}
-      <footer className="py-6 border-t border-border">
+      <footer className="py-6 border-t border-border space-y-5">
+        <div className="max-w-2xl mx-auto px-4 text-center">
+          <Dialog>
+            <DialogTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Coffee className="h-4 w-4 text-primary" />
+                <span>Buy me a coffee :)</span>
+              </button>
+            </DialogTrigger>
+            <CoffeeSupportDialogContent onCopy={handleCopyGcashNumber} />
+          </Dialog>
+        </div>
         <div className="max-w-2xl mx-auto px-4 text-center">
           <p className="text-xs text-muted-foreground">
-            {publicSettings?.footerText || "Powered by HutaoTik"}
+            {publicSettings?.footerText || "Powered by Makisensei"}
           </p>
         </div>
       </footer>

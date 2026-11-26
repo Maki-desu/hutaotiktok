@@ -15,7 +15,7 @@ router.get("/instagram/info", async (req, res): Promise<void> => {
   const info = await fetchInstagramInfo(url);
   if (!info) {
     res.status(400).json({
-      error: "Could not fetch this Instagram video. It may be private, unavailable, or require login.",
+      error: "Could not fetch this Instagram media. It may be private, unavailable, or require login.",
     });
     return;
   }
@@ -37,17 +37,17 @@ router.get("/instagram/download", async (req, res): Promise<void> => {
     .substring(0, 80) || "Instagram Video";
 
   try {
-    const tmpPath = await downloadInstagramVideo(url);
-    res.setHeader("Content-Type", "video/mp4");
+    const file = await downloadInstagramVideo(url);
+    res.setHeader("Content-Type", file.contentType);
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename*=UTF-8''${encodeURIComponent(`${safeTitle}.mp4`)}`,
+      `attachment; filename*=UTF-8''${encodeURIComponent(`${safeTitle}.${file.extension}`)}`,
     );
-    await streamTempFile(tmpPath, res);
+    await streamTempFile(file.tmpPath, res);
   } catch (err) {
     logger.error({ err, url }, "instagram: download route error");
     if (!res.headersSent) {
-      res.status(500).json({ error: "The Instagram video download failed. Please try again later." });
+      res.status(500).json({ error: "The Instagram download failed. Please try again later." });
     } else {
       res.destroy(err instanceof Error ? err : undefined);
     }

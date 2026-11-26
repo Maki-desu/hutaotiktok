@@ -176,8 +176,63 @@
   --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
 }
 
+.light {
+  color-scheme: light;
+
+  --button-outline: rgba(0, 0, 0, .10);
+  --badge-outline: rgba(0, 0, 0, .06);
+  --elevate-1: rgba(0, 0, 0, .03);
+  --elevate-2: rgba(0, 0, 0, .07);
+
+  --background: 0 0% 98%;
+  --foreground: 0 0% 10%;
+  --border: 0 0% 87%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 10%;
+  --card-border: 0 0% 87%;
+
+  --sidebar: 0 0% 96%;
+  --sidebar-foreground: 0 0% 10%;
+  --sidebar-border: 0 0% 87%;
+  --sidebar-primary: 24 95% 53%;
+  --sidebar-primary-foreground: 0 0% 10%;
+  --sidebar-accent: 0 0% 91%;
+  --sidebar-accent-foreground: 0 0% 10%;
+  --sidebar-ring: 24 95% 53%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 10%;
+  --popover-border: 0 0% 87%;
+
+  --secondary: 0 0% 92%;
+  --secondary-foreground: 0 0% 15%;
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 40%;
+  --accent: 0 0% 91%;
+  --accent-foreground: 0 0% 10%;
+
+  --input: 0 0% 84%;
+  --ring: 24 95% 53%;
+
+  --chart-1: 24 95% 45%;
+  --chart-2: 0 0% 20%;
+  --chart-3: 0 0% 40%;
+  --chart-4: 0 0% 58%;
+  --chart-5: 0 0% 72%;
+
+  --shadow-2xs: 0px 0px 5px 0px hsla(24, 95%, 53%, 0.06);
+  --shadow-xs: 0px 0px 10px 0px hsla(24, 95%, 53%, 0.08);
+  --shadow-sm: 0px 0px 15px 0px hsla(24, 95%, 53%, 0.10);
+  --shadow: 0px 0px 20px 0px hsla(24, 95%, 53%, 0.14);
+  --shadow-md: 0px 0px 25px 0px hsla(24, 95%, 53%, 0.18);
+  --shadow-lg: 0px 0px 30px 0px hsla(24, 95%, 53%, 0.22);
+  --shadow-xl: 0px 0px 40px 0px hsla(24, 95%, 53%, 0.26);
+  --shadow-2xl: 0px 0px 50px 0px hsla(24, 95%, 53%, 0.30);
+}
+
 .dark {
-  /* Mirror root, keeping it entirely dark mode */
+  color-scheme: dark;
 }
 
 @layer base {
@@ -187,8 +242,399 @@
   body {
     @apply font-sans antialiased bg-background text-foreground;
   }
+  .app-shell {
+    background-color: hsl(var(--background));
+  }
+  .hero-banner-depth {
+    background-image: var(--app-surface-gradient, none);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 82%, #000 100%);
+    mask-image: linear-gradient(to bottom, transparent 82%, #000 100%);
+    opacity: 0.14;
+  }
+  .hero-banner-scrim {
+    background:
+      linear-gradient(
+        to bottom,
+        rgb(0 0 0 / 0.28) 0%,
+        rgb(0 0 0 / 0.14) 32%,
+        hsl(var(--background) / 0) 84%,
+        hsl(var(--background) / 0.55) 97%,
+        hsl(var(--background)) 100%
+      );
+  }
   h1, h2, h3, h4, h5, h6, .font-syne {
     font-family: var(--app-font-serif);
+  }
+}
+
+html.theme-transition::after {
+  content: "";
+  position: fixed;
+  z-index: 9999;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 45%, hsl(var(--primary) / 0.34), transparent 68%);
+  animation: theme-color-wave 850ms cubic-bezier(0.2, 0.7, 0.25, 1) both;
+}
+
+.app-shell,
+.app-shell main,
+.app-shell main section,
+.app-shell main button,
+.app-shell footer {
+  transition:
+    background-color 550ms ease,
+    border-color 550ms ease,
+    color 450ms ease,
+    box-shadow 550ms ease;
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main section,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-card,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-background {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background-color: hsl(var(--card) / 0.46);
+  background-image:
+    linear-gradient(135deg, hsl(var(--foreground) / 0.16) 0%, hsl(var(--foreground) / 0.04) 22%, transparent 46%),
+    radial-gradient(circle at top left, hsl(var(--foreground) / 0.22) 0%, transparent 38%),
+    linear-gradient(315deg, hsl(var(--primary) / 0.08), transparent 58%);
+  border-color: hsl(var(--foreground) / 0.18);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.26),
+    inset 0 -1px 0 hsl(var(--foreground) / 0.07),
+    0 18px 40px hsl(0 0% 0% / 0.25),
+    0 0 0 1px hsl(var(--foreground) / 0.04);
+  -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(1.08);
+  backdrop-filter: blur(28px) saturate(160%) brightness(1.08);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main section::before,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-card::before,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-background::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: linear-gradient(120deg, hsl(var(--foreground) / 0.12), transparent 28%, transparent 62%, hsl(var(--foreground) / 0.08));
+  pointer-events: none;
+  z-index: -1;
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main section {
+  background-color: hsl(var(--card) / 0.38);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main button,
+:root[data-ui-style="liquid-glass"] .app-shell main [role="combobox"] {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-color: hsl(var(--foreground) / 0.18);
+  background-color: hsl(var(--card) / 0.28);
+  background-image: linear-gradient(145deg, hsl(var(--foreground) / 0.1), transparent 60%);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.18),
+    0 8px 18px hsl(0 0% 0% / 0.18),
+    0 0 0 1px hsl(var(--foreground) / 0.03);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main button::before,
+:root[data-ui-style="liquid-glass"] .app-shell main [role="combobox"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(130deg, hsl(var(--foreground) / 0.16), transparent 42%, hsl(var(--foreground) / 0.06));
+  pointer-events: none;
+  z-index: -1;
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main button.bg-primary {
+  background-image: linear-gradient(145deg, hsl(var(--foreground) / 0.22), transparent 62%);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.34),
+    0 10px 22px hsl(var(--primary) / 0.24),
+    0 0 0 1px hsl(var(--primary) / 0.18);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main button.bg-primary::before,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-primary::before {
+  background: linear-gradient(130deg, hsl(var(--foreground) / 0.2), transparent 46%, hsl(var(--primary) / 0.12));
+}
+
+:root[data-ui-style="soft-glow"] .app-shell main section,
+:root[data-ui-style="soft-glow"] .app-shell main .bg-card {
+  box-shadow:
+    0 0 0 1px hsl(var(--primary) / 0.08),
+    0 8px 24px hsl(var(--primary) / 0.08);
+}
+
+:root[data-ui-style="minimal"] .app-shell main section,
+:root[data-ui-style="minimal"] .app-shell main .bg-card {
+  border-color: hsl(var(--border) / 0.55);
+  box-shadow: none;
+}
+
+.dropdown-motion[data-state="open"] {
+  transform-origin: var(--radix-select-content-transform-origin, var(--radix-dropdown-menu-content-transform-origin, center));
+}
+
+:root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] {
+  animation: dropdown-smooth-in var(--dropdown-open-duration, 560ms) cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+:root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="closed"] {
+  animation: dropdown-smooth-out var(--dropdown-close-duration, 180ms) cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 720ms) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
+  animation: dropdown-bounce-out var(--dropdown-close-duration, 180ms) cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] {
+  animation: dropdown-slide-in var(--dropdown-open-duration, 420ms) cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="closed"] {
+  animation: dropdown-slide-out var(--dropdown-close-duration, 160ms) cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] {
+  animation: dropdown-fade-in var(--dropdown-open-duration, 360ms) ease-out both;
+}
+
+:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="closed"] {
+  animation: dropdown-fade-out var(--dropdown-close-duration, 140ms) ease-in both;
+}
+
+:root[data-dropdown-animation="none"] .dropdown-motion {
+  animation: none !important;
+}
+
+:root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
+:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
+:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
+:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: dropdown-item-drop var(--dropdown-item-duration, 420ms) cubic-bezier(0.18, 0.82, 0.25, 1) both;
+  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 38ms));
+}
+
+:root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
+:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
+:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
+:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1) { --dropdown-item-index: 0; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(2) { --dropdown-item-index: 1; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(3) { --dropdown-item-index: 2; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(4) { --dropdown-item-index: 3; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(5) { --dropdown-item-index: 4; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(6) { --dropdown-item-index: 5; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(7) { --dropdown-item-index: 6; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(8) { --dropdown-item-index: 7; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(9) { --dropdown-item-index: 8; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(10) { --dropdown-item-index: 9; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(11) { --dropdown-item-index: 10; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(12) { --dropdown-item-index: 11; }
+
+:root[data-dropdown-animation="none"] .dropdown-motion :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: none !important;
+}
+
+@keyframes dropdown-smooth-in {
+  from { opacity: 0; filter: blur(7px); transform: translateY(-5px) scale(0.97); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+}
+
+@keyframes dropdown-smooth-out {
+  from { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+  to { opacity: 0; filter: blur(4px); transform: translateY(-3px) scale(0.985); }
+}
+
+@keyframes dropdown-bounce-in {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.94); }
+  58% { opacity: 1; transform: translateY(2px) scale(1.015); }
+  82% { transform: translateY(-1px) scale(0.998); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes dropdown-bounce-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-5px) scale(0.96); }
+}
+
+@keyframes dropdown-slide-in {
+  from { opacity: 0; transform: translateY(-9px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dropdown-slide-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-5px); }
+}
+
+@keyframes dropdown-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dropdown-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes dropdown-item-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-9px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.theme-preset-swatch {
+  background-size: 200% 200%;
+  animation: palette-shimmer 3s ease-in-out infinite;
+}
+
+.settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-disclosure[open] > summary > svg {
+  transform: rotate(180deg);
+}
+
+.settings-disclosure > summary > svg {
+  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.screen-transition {
+  min-height: 100%;
+  animation-duration: 760ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+  will-change: opacity, transform;
+}
+
+.screen-transition--fade {
+  animation-name: screen-fade-in;
+}
+
+.screen-transition--slide {
+  animation-name: screen-slide-in;
+}
+
+.screen-transition--zoom {
+  animation-name: screen-zoom-in;
+}
+
+.screen-transition--bounce {
+  animation-name: screen-bounce-in;
+  animation-duration: 1050ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.screen-transition--elastic {
+  animation-name: screen-elastic-in;
+  animation-duration: 1150ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.screen-transition--flip {
+  animation-name: screen-flip-in;
+  animation-duration: 900ms;
+  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center center;
+}
+
+.screen-transition--blur {
+  animation-name: screen-blur-in;
+  animation-duration: 850ms;
+}
+
+@keyframes screen-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes screen-slide-in {
+  from { opacity: 0; transform: translateX(22px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes screen-zoom-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes screen-bounce-in {
+  0% { opacity: 0; transform: translateY(24px) scale(0.975); }
+  55% { opacity: 1; transform: translateY(-5px) scale(1.01); }
+  76% { transform: translateY(2px) scale(0.997); }
+  91% { transform: translateY(-1px) scale(1.001); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes screen-elastic-in {
+  0% { opacity: 0; transform: translateX(28px) scale(0.965); }
+  55% { opacity: 1; transform: translateX(-6px) scale(1.01); }
+  76% { transform: translateX(3px) scale(0.997); }
+  91% { transform: translateX(-1px) scale(1.001); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes screen-flip-in {
+  from { opacity: 0; transform: perspective(900px) rotateY(-12deg) translateX(14px); }
+  to { opacity: 1; transform: perspective(900px) rotateY(0) translateX(0); }
+}
+
+@keyframes screen-blur-in {
+  from { opacity: 0; filter: blur(12px); transform: scale(1.025); }
+  to { opacity: 1; filter: blur(0); transform: scale(1); }
+}
+
+@keyframes theme-color-wave {
+  0% {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  22% {
+    opacity: 0.72;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes palette-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-transition::after,
+  .theme-preset-swatch,
+  .screen-transition,
+  .dropdown-motion {
+    animation: none;
+    will-change: auto;
+  }
+
+  .app-shell,
+  .app-shell main,
+  .app-shell main section,
+  .app-shell main button,
+  .app-shell footer {
+    transition-duration: 0.01ms;
   }
 }
 
@@ -261,6 +707,29 @@
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
   }
+}
+
+/* ── Safe Area & Touch Utilities for Mobile ────────────────── */
+.pt-safe {
+  padding-top: max(1rem, env(safe-area-inset-top, 16px));
+}
+.pb-safe {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 24px));
+}
+button, a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Lively Button Press & Glow Effects ─────────────────────── */
+button, [role="button"], .interactive-element {
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, ring 0.2s ease;
+}
+button:active, [role="button"]:active, .interactive-element:active {
+  transform: scale(0.92) translateY(1px);
+  box-shadow: 0 0 25px rgba(249, 115, 22, 0.9), inset 0 0 12px rgba(249, 115, 22, 0.5);
+  outline: 2px solid hsl(var(--primary));
+  filter: brightness(1.15);
 }
 
 /* ── Ghost orbit animations ─────────────────────────────────── */

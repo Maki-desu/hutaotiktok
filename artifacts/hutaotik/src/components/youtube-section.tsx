@@ -1,9 +1,18 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, Music, Loader2, AlertCircle } from "lucide-react";
+import { Download, Music, Loader2, AlertCircle, LockKeyhole, FolderCheck, CheckCircle2, ArrowDown, Sparkles } from "lucide-react";
 import { SiYoutube } from "react-icons/si";
 import { apiUrl } from "@/lib/api-url";
+import { saveBlobToDevice } from "@/lib/download-folder";
+import { saveLocalHistoryRecord } from "@/lib/local-history";
+import { useToast } from "@/hooks/use-toast";
+import { isYouTubeUrl } from "@/lib/youtube-url";
+import {
+  downloadYouTubeOnDevice,
+  fetchYouTubeInfoOnDevice,
+  isNativeYouTubeAvailable,
+} from "@/lib/youtube-native";
 
 interface YTFormat {
   formatStr: string;
@@ -22,6 +31,8 @@ interface YTInfo {
 
 interface Props {
   url: string;
+  folderName?: string | null;
+  onOpenFolderPicker?: () => void;
 }
 
 function fmtDuration(s: number) {
@@ -35,18 +46,48 @@ function fmtDuration(s: number) {
 
 type Selection = { type: "video"; formatStr: string } | { type: "audio" };
 
-export function YoutubeSection({ url }: Props) {
+async function parseApiResponse<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    if (!response.ok && response.status >= 500) {
+      throw new Error("The YouTube API server is having a problem. Please try again later or contact the app administrator.");
+    }
+    if (!response.ok) throw new Error(`YouTube request failed (${response.status}).`);
+    throw new Error("The YouTube service returned an invalid response.");
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof data === "object" && data !== null && "error" in data && typeof data.error === "string"
+        ? data.error
+        : response.status >= 500
+          ? "The YouTube API server is having a problem. Please try again later or contact the app administrator."
+          : `YouTube request failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [info, setInfo] = useState<YTInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [nativeOnDevice, setNativeOnDevice] = useState(false);
+  const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
+
+  const { toast } = useToast();
 
   useEffect(() => {
-    if (!url || !/(youtube\.com|youtu\.be)/i.test(url)) {
+    if (!isYouTubeUrl(url)) {
       setInfo(null);
       setError(null);
       setSelected(null);
+      setNativeOnDevice(false);
       return;
     }
 
@@ -55,25 +96,27 @@ export function YoutubeSection({ url }: Props) {
     setInfo(null);
     setError(null);
     setSelected(null);
+    setDownloadSuccessInfo(null);
+    const useNativeDownloader = isNativeYouTubeAvailable();
+    setNativeOnDevice(useNativeDownloader);
 
-    fetch(apiUrl(`/api/youtube/info?url=${encodeURIComponent(url)}`), {
-      signal: controller.signal,
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          const d = (await r.json()) as { error?: string };
-          throw new Error(d.error ?? "Failed to fetch");
-        }
-        return r.json() as Promise<YTInfo>;
-      })
+    const infoRequest = useNativeDownloader
+      ? fetchYouTubeInfoOnDevice(url)
+      : fetch(apiUrl(`/api/youtube/info?url=${encodeURIComponent(url)}`), {
+          signal: controller.signal,
+        }).then((response) => parseApiResponse<YTInfo>(response));
+
+    infoRequest
       .then((data) => {
+        if (controller.signal.aborted) return;
         setInfo(data);
-        if (data.formats.length > 0)
+        if (data.formats.length > 0) {
           setSelected({ type: "video", formatStr: data.formats[0].formatStr });
+        }
       })
-      .catch((err: Error) => {
-        if (err.name !== "AbortError")
-          setError(err.message || "Could not fetch video info");
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : "Could not fetch YouTube video information.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -82,31 +125,98 @@ export function YoutubeSection({ url }: Props) {
     return () => controller.abort();
   }, [url]);
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!selected || !info) return;
-    setDownloading(true);
 
-    let href: string;
+    if (!folderName) {
+      if (onOpenFolderPicker) onOpenFolderPicker();
+      return;
+    }
+
+    setDownloading(true);
+    setDownloadSuccessInfo(null);
+
+    let downloadUrl: string;
     let filename: string;
-    const safeTitle = info.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, " ").trim().substring(0, 60);
+    let selectedLabel: string;
+    const safeTitle = info.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, " ").trim().substring(0, 60) || "YouTube Video";
 
     if (selected.type === "audio") {
-      href = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&audio=true&title=${encodeURIComponent(safeTitle)}`);
-      filename = `${safeTitle}.mp3`;
+      selectedLabel = nativeOnDevice ? "M4A" : "MP3";
+      downloadUrl = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&audio=true&title=${encodeURIComponent(safeTitle)}`);
+      filename = `${safeTitle}.${nativeOnDevice ? "m4a" : "mp3"}`;
     } else {
       const fmt = info.formats.find((f) => f.formatStr === selected.formatStr);
       const ql = fmt?.qualityLabel ?? "";
-      href = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&formatStr=${encodeURIComponent(selected.formatStr)}&title=${encodeURIComponent(safeTitle)}&quality=${encodeURIComponent(ql)}`);
       filename = `${safeTitle}${ql ? ` - ${ql}` : ""}.mp4`;
+      selectedLabel = `${ql || "MP4"} MP4`;
+      downloadUrl = apiUrl(`/api/youtube/download?url=${encodeURIComponent(url)}&formatStr=${encodeURIComponent(selected.formatStr)}&title=${encodeURIComponent(safeTitle)}&quality=${encodeURIComponent(ql)}`);
     }
 
-    const a = document.createElement("a");
-    a.href = href;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => setDownloading(false), 3000);
+    try {
+      if (nativeOnDevice) {
+        await downloadYouTubeOnDevice(
+          url,
+          selected.type === "audio" ? "audio" : selected.formatStr,
+          filename,
+          folderName
+        );
+        saveLocalHistoryRecord({
+          title: info.title || "YouTube Video",
+          author: info.channelName,
+          authorUsername: info.channelName,
+          thumbnail: info.thumbnail,
+          quality: selectedLabel,
+          sourceUrl: url,
+          downloadUrl,
+          platform: "youtube",
+        });
+        setDownloadSuccessInfo({ filename, folder: folderName });
+        toast({
+          title: "YouTube Download Complete!",
+          description: `Your download is complete and saved to Documents/${folderName}/${filename}`,
+        });
+        return;
+      }
+
+      const res = await fetch(downloadUrl, { referrerPolicy: "no-referrer" });
+      if (!res.ok) {
+        await parseApiResponse<{ error?: string }>(res);
+        throw new Error(`YouTube download failed (${res.status}).`);
+      }
+      const blob = await res.blob();
+      if (blob.size === 0) throw new Error("The server returned an empty video file.");
+      if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
+        throw new Error("The server returned an error page instead of the YouTube video.");
+      }
+      await saveBlobToDevice(blob, filename, folderName);
+
+      saveLocalHistoryRecord({
+        title: info.title || "YouTube Video",
+        author: info.channelName,
+        authorUsername: info.channelName,
+        thumbnail: info.thumbnail,
+        quality: selectedLabel,
+        sourceUrl: url,
+        downloadUrl,
+        platform: "youtube",
+      });
+
+      setDownloadSuccessInfo({ filename, folder: folderName });
+      toast({
+        title: "YouTube Download Complete!",
+        description: `Your download is complete and saved to Documents/${folderName}/${filename}`,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Download failed";
+      toast({
+        title: "Download failed",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setDownloading(false);
+    }
   };
 
   if (loading) {
@@ -144,7 +254,7 @@ export function YoutubeSection({ url }: Props) {
     selected?.type === "video"
       ? info.formats.find((f) => f.formatStr === selected.formatStr)
       : null;
-  const dlLabel = isAudio ? "MP3" : selFmt ? `${selFmt.qualityLabel} MP4` : "";
+  const dlLabel = isAudio ? (nativeOnDevice ? "M4A" : "MP3") : selFmt ? `${selFmt.qualityLabel} MP4` : "";
   const isMuxed = selFmt?.needsMux ?? false;
 
   return (
@@ -177,19 +287,20 @@ export function YoutubeSection({ url }: Props) {
       <div className="px-4 pb-3 space-y-3">
         {/* Video qualities */}
         <div>
-          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2 font-semibold">
             Video Quality
           </p>
           {info.formats.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
-              {info.formats.map((f) => (
+              {info.formats.map((f, i) => (
                 <button
-                  key={f.formatStr}
+                  key={i}
+                  type="button"
                   onClick={() => setSelected({ type: "video", formatStr: f.formatStr })}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
                     selected?.type === "video" && selected.formatStr === f.formatStr
                       ? "bg-primary border-primary text-primary-foreground shadow-sm shadow-primary/30"
-                      : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                      : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground active:scale-95"
                   }`}
                 >
                   {f.qualityLabel}
@@ -203,19 +314,20 @@ export function YoutubeSection({ url }: Props) {
 
         {/* Audio */}
         <div className="border-t border-border/50 pt-3">
-          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2 font-semibold">
             Audio Only
           </p>
           <button
+            type="button"
             onClick={() => setSelected({ type: "audio" })}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
               isAudio
                 ? "bg-primary border-primary text-primary-foreground shadow-sm shadow-primary/30"
-                : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground active:scale-95"
             }`}
           >
             <Music className="w-3 h-3" />
-            MP3
+            {nativeOnDevice ? "M4A Audio" : "MP3 Audio"}
           </button>
         </div>
       </div>
@@ -224,25 +336,84 @@ export function YoutubeSection({ url }: Props) {
       {isMuxed && (
         <div className="px-4 pb-2">
           <p className="text-[11px] text-muted-foreground">
-            ⏳ High-quality downloads process server-side before starting — may take a minute.
+            ⏳ High-quality downloads process server-side before starting — may take a moment.
           </p>
+        </div>
+      )}
+
+      {/* Downloading Animation */}
+      {downloading && (
+        <div className="px-4 pb-4 animate-in fade-in duration-300">
+          <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                <ArrowDown className="w-5 h-5 text-primary animate-bounce" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-foreground leading-tight flex items-center gap-1.5">
+                  <span>Downloading YouTube video to {folderName}…</span>
+                  <Sparkles className="w-3.5 h-3.5 text-primary animate-spin" />
+                </p>
+                <p className="text-[11px] text-muted-foreground truncate mt-0.5">Processing & saving to device folder…</p>
+              </div>
+            </div>
+            <div className="w-full bg-secondary/80 h-1.5 rounded-full overflow-hidden">
+              <div className="bg-gradient-to-r from-primary/40 via-primary to-primary/40 h-full rounded-full animate-pulse w-full" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Download Complete Visual */}
+      {downloadSuccessInfo && !downloading && (
+        <div className="px-4 pb-4 animate-in fade-in zoom-in-95 duration-300">
+          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500 shrink-0 mt-0.5">
+              <CheckCircle2 className="w-5 h-5 animate-in zoom-in-50 duration-300" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-extrabold text-emerald-400 leading-tight">YouTube Download Complete!</p>
+              <p className="text-[11px] text-foreground font-medium truncate mt-0.5">{downloadSuccessInfo.filename}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                <FolderCheck className="w-3 h-3 text-emerald-400 shrink-0" />
+                Saved in device folder: <strong>{downloadSuccessInfo.folder}</strong>
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Download button */}
       <div className="px-4 pb-4">
-        <Button
-          className="w-full h-11 font-bold text-sm rounded-xl shadow-sm shadow-primary/25 hover:shadow-primary/40 transition-all"
-          onClick={handleDownload}
-          disabled={!selected || downloading}
-        >
-          {downloading ? (
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4 mr-2" />
-          )}
-          {downloading ? (isMuxed ? "Processing…" : "Starting…") : `Download${dlLabel ? " " + dlLabel : ""}`}
-        </Button>
+        {!folderName ? (
+          <Button
+            type="button"
+            onClick={onOpenFolderPicker}
+            className="w-full h-11 font-bold text-sm rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-500 hover:bg-amber-500/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <LockKeyhole className="w-4 h-4 text-amber-500 animate-pulse" />
+            <span>Download Locked – Select a download location to continue</span>
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            className="w-full h-11 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+            onClick={handleDownload}
+            disabled={!selected || downloading}
+          >
+            {downloading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Downloading YouTube video…</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-4 h-4" />
+                <span>Save {dlLabel || "YouTube Video"} to {folderName}</span>
+              </>
+            )}
+          </Button>
+        )}
       </div>
     </div>
   );

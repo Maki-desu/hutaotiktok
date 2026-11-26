@@ -20,6 +20,8 @@ tags:
     description: Post notifications
   - name: history
     description: Download history
+  - name: appUpdates
+    description: Android app releases and update notifications
 paths:
   /healthz:
     get:
@@ -132,6 +134,123 @@ paths:
                 $ref: "#/components/schemas/AdminAuthResult"
         "401":
           description: Invalid password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Admin login is not configured securely
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/app-updates:
+    post:
+      operationId: publishAppUpdate
+      tags: [admin]
+      summary: Publish an Android app update using a hosted APK link
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppUpdatePublishInput"
+      responses:
+        "201":
+          description: Release published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppUpdatePublishResult"
+        "400":
+          description: Invalid release metadata or HTTPS APK link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Admin authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The Android version code limit has been reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /app-updates/latest:
+    get:
+      operationId: getLatestAppUpdate
+      tags: [appUpdates]
+      summary: Get the latest published Android release
+      responses:
+        "200":
+          description: Latest release metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishedAppUpdate"
+        "404":
+          description: No release has been published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /app-updates/{id}/download:
+    get:
+      operationId: downloadAppUpdate
+      tags: [appUpdates]
+      summary: Download a published Android APK
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Android package archive
+          content:
+            application/vnd.android.package-archive:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid release ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Release not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /app-updates/register-device:
+    post:
+      operationId: registerAppUpdateDevice
+      tags: [appUpdates]
+      summary: Register a device for Android release push notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppUpdateDeviceInput"
+      responses:
+        "204":
+          description: Device registered
+        "400":
+          description: Invalid Firebase device token
           content:
             application/json:
               schema:
@@ -610,6 +729,94 @@ components:
       required:
         - token
         - success
+
+    AppUpdatePublishInput:
+      type: object
+      properties:
+        changelog:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        downloadUrl:
+          type: string
+          format: uri
+          pattern: "^https://"
+        isMandatory:
+          type: boolean
+      required:
+        - changelog
+        - downloadUrl
+
+    PublishedAppUpdate:
+      type: object
+      properties:
+        versionCode:
+          type: integer
+        versionName:
+          type: string
+        changelog:
+          type: string
+        downloadUrl:
+          type: string
+        fileSize:
+          type: ["integer", "null"]
+        sha256:
+          type: ["string", "null"]
+        isMandatory:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - versionCode
+        - versionName
+        - changelog
+        - downloadUrl
+        - isMandatory
+        - createdAt
+
+    AppUpdateDeviceInput:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 2000
+      required:
+        - token
+
+    AppUpdatePublishResult:
+      type: object
+      properties:
+        release:
+          type: object
+          properties:
+            versionCode:
+              type: integer
+            versionName:
+              type: string
+          required:
+            - versionCode
+            - versionName
+        push:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [sent, partial, failed, not_configured]
+            deviceCount:
+              type: integer
+            deliveredCount:
+              type: integer
+          required:
+            - status
+            - deviceCount
+            - deliveredCount
+        warning:
+          type: string
+      required:
+        - release
+        - push
 
     AdminSettings:
       type: object

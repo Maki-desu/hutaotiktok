@@ -9,7 +9,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   tiktokProfileUrl: text("tiktok_profile_url"),
   tiktokAvatarUrl: text("tiktok_avatar_url"),
   siteTitle: text("site_title").notNull().default("HutaoTik"),
-  footerText: text("footer_text").notNull().default("Powered by HutaoTik"),
+  footerText: text("footer_text").notNull().default("Powered by Makisensei"),
   downloadsEnabled: boolean("downloads_enabled").notNull().default(true),
   alertsEnabled: boolean("alerts_enabled").notNull().default(true),
   historyEnabled: boolean("history_enabled").notNull().default(true),

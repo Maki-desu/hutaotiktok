@@ -175,7 +175,24 @@ function ImageDropZone({ label, value, onChange, aspect = "square" }: ImageDropZ
 
 export default function Admin() {
   const [password, setPassword] = useState("");
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("admin_token"));
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    const token = localStorage.getItem("admin_token");
+    const payload = token?.split(".")[0];
+    if (!payload) return false;
+    try {
+      const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+      const parsed: unknown = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")));
+      return (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "expiresAt" in parsed &&
+        typeof parsed.expiresAt === "number" &&
+        parsed.expiresAt > Date.now()
+      );
+    } catch {
+      return false;
+    }
+  });
   const { toast } = useToast();
 
   const loginMutation = useAdminLogin();

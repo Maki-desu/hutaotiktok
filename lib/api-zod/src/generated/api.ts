@@ -137,6 +137,59 @@ export const AdminLoginResponse = zod.object({
 
 
 /**
+ * @summary Publish an Android app update
+ */
+
+export const publishAppUpdateBodyVersionNameRegExp = new RegExp('^[0-9A-Za-z.-]{1,32}$');
+export const publishAppUpdateBodyChangelogMax = 5000;
+
+
+
+export const PublishAppUpdateBody = zod.object({
+  "versionCode": zod.number().min(1),
+  "versionName": zod.string().regex(publishAppUpdateBodyVersionNameRegExp),
+  "changelog": zod.string().min(1).max(publishAppUpdateBodyChangelogMax),
+  "apk": zod.instanceof(File)
+})
+
+
+/**
+ * @summary Get the latest published Android release
+ */
+export const GetLatestAppUpdateResponse = zod.object({
+  "versionCode": zod.number(),
+  "versionName": zod.string(),
+  "changelog": zod.string(),
+  "downloadUrl": zod.string(),
+  "fileSize": zod.number(),
+  "sha256": zod.string(),
+  "isMandatory": zod.boolean(),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Download a published Android APK
+ */
+export const DownloadAppUpdateParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
+ * @summary Register a device for Android release push notifications
+ */
+export const registerAppUpdateDeviceBodyTokenMin = 20;
+export const registerAppUpdateDeviceBodyTokenMax = 2000;
+
+
+
+export const RegisterAppUpdateDeviceBody = zod.object({
+  "token": zod.string().min(registerAppUpdateDeviceBodyTokenMin).max(registerAppUpdateDeviceBodyTokenMax)
+})
+
+
+/**
  * @summary List all announcements (admin)
  */
 export const AdminListAnnouncementsResponseItem = zod.object({

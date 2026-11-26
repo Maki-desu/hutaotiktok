@@ -87,49 +87,40 @@ export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null>
     const data = JSON.parse(stdout) as YtDlpOutput;
     const allFormats = data.formats ?? [];
 
-    // Prefer AVC video and AAC audio for broad Android and browser playback support.
+    // Prefer AAC audio so high-resolution video-only streams can be muxed into MP4.
     const bestAudio = allFormats
       .filter((f) => f.vcodec === "none" && f.acodec?.startsWith("mp4a") && f.ext === "m4a")
       .sort((a, b) => (b.tbr ?? 0) - (a.tbr ?? 0))[0];
     const audioId = bestAudio?.format_id;
-
-    const isCompatibleVideo = (f: YtDlpFormat) =>
-      typeof f.vcodec === "string" && f.vcodec.startsWith("avc1");
-    const isCompatibleAudio = (f: YtDlpFormat) =>
-      typeof f.acodec === "string" && f.acodec.startsWith("mp4a");
-
-    // Only offer H.264/AAC MP4 streams that play on common Android devices.
-    const combined = allFormats
-      .filter((f) => isCompatibleVideo(f) && isCompatibleAudio(f) && f.ext === "mp4")
-      .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-
-    // H.264 video-only formats can be muxed with an AAC audio stream.
-    const videoOnly = allFormats
-      .filter((f) => isCompatibleVideo(f) && f.acodec === "none" && f.ext === "mp4")
-      .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
+    const candidates = allFormats
+      .filter((f) =>
+        typeof f.format_id === "string" &&
+        typeof f.vcodec === "string" &&
+        f.vcodec !== "none" &&
+        typeof f.acodec === "string" &&
+        (f.ext === "mp4" || f.ext === "webm") &&
+        (f.acodec !== "none" || audioId !== undefined)
+      )
+      .sort((a, b) =>
+        (b.height ?? 0) - (a.height ?? 0) ||
+        (b.tbr ?? 0) - (a.tbr ?? 0) ||
+        Number(b.acodec !== "none") - Number(a.acodec !== "none")
+      );
 
     const seenHeights = new Set<number>();
     const formats: YouTubeFormat[] = [];
 
-    for (const f of combined) {
+    for (const f of candidates) {
       const h = f.height ?? 0;
-      if (seenHeights.has(h)) continue;
+      if (h <= 0 || seenHeights.has(h) || !f.format_id) continue;
+      const needsMux = f.acodec === "none";
       seenHeights.add(h);
-      if (!f.format_id) continue;
-      formats.push({ formatStr: f.format_id, qualityLabel: h ? `${h}p` : f.format_id, needsMux: false });
+      formats.push({
+        formatStr: needsMux ? `${f.format_id}+${audioId}` : f.format_id,
+        qualityLabel: `${h}p`,
+        needsMux,
+      });
     }
-
-    const muxHeights = [2160, 1440, 1080, 720, 480];
-    for (const targetH of muxHeights) {
-      if (seenHeights.has(targetH)) continue;
-      if (!audioId) continue;
-      const vFmt = videoOnly.find((f) => f.height === targetH);
-      if (!vFmt?.format_id) continue;
-      seenHeights.add(targetH);
-      formats.push({ formatStr: `${vFmt.format_id}+${audioId}`, qualityLabel: `${targetH}p`, needsMux: true });
-    }
-
-    formats.sort((a, b) => parseInt(b.qualityLabel) - parseInt(a.qualityLabel));
 
     return {
       id: data.id ?? "",

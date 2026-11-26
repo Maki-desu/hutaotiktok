@@ -120,6 +120,67 @@ export interface AdminAuthResult {
   success: boolean;
 }
 
+export interface AppUpdateUploadInput {
+  /** @minimum 1 */
+  versionCode: number;
+  /** @pattern ^[0-9A-Za-z.-]{1,32}$ */
+  versionName: string;
+  /**
+     * @minLength 1
+     * @maxLength 5000
+     */
+  changelog: string;
+  apk: Blob;
+}
+
+export interface PublishedAppUpdate {
+  versionCode: number;
+  versionName: string;
+  changelog: string;
+  downloadUrl: string;
+  fileSize: number;
+  sha256: string;
+  isMandatory: boolean;
+  createdAt: string;
+}
+
+export interface AppUpdateDeviceInput {
+  /**
+     * @minLength 20
+     * @maxLength 2000
+     */
+  token: string;
+}
+
+export type AppUpdatePublishResultRelease = {
+  versionCode: number;
+  versionName: string;
+  sha256: string;
+  fileSize: number;
+};
+
+export type AppUpdatePublishResultPushStatus = typeof AppUpdatePublishResultPushStatus[keyof typeof AppUpdatePublishResultPushStatus];
+
+
+export const AppUpdatePublishResultPushStatus = {
+  sent: 'sent',
+  partial: 'partial',
+  failed: 'failed',
+  not_configured: 'not_configured',
+} as const;
+
+export type AppUpdatePublishResultPush = {
+  status: AppUpdatePublishResultPushStatus;
+  deviceCount: number;
+  deliveredCount: number;
+};
+
+export interface AppUpdatePublishResult {
+  release: AppUpdatePublishResultRelease;
+  push: AppUpdatePublishResultPush;
+  warning?: string;
+}
+
 export interface AdminSettings {
   /** @nullable */
   logoUrl?: string | null;

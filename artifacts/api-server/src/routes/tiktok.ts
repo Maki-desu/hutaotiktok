@@ -240,7 +240,11 @@ async function fetchTikTokWithYtDlp(url: string): Promise<TikwmApiResponse | nul
         (b.tbr ?? 0) - (a.tbr ?? 0)
       );
     const hdUrl = videoFormats[0]?.url ?? video.url;
-    const normalUrl = videoFormats.find(hasAudio)?.url ?? hdUrl;
+    const normalUrl = videoFormats.find((format) => (format.height ?? 0) >= 480 && hasAudio(format))?.url ??
+      videoFormats.find(hasAudio)?.url ??
+      hdUrl;
+    const audioFormats = videoFormats.filter(hasAudio);
+    const lowUrl = (audioFormats.length > 0 ? audioFormats[audioFormats.length - 1] : videoFormats[videoFormats.length - 1])?.url ?? hdUrl;
 
     if (!video.id || !hdUrl) return null;
 
@@ -257,6 +261,7 @@ async function fetchTikTokWithYtDlp(url: string): Promise<TikwmApiResponse | nul
         title: video.title ?? video.description ?? "Untitled",
         play: normalUrl,
         hdplay: hdUrl,
+        wmplay: lowUrl,
         cover: video.thumbnail,
         duration: video.duration,
         create_time: video.timestamp,

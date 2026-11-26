@@ -1,0 +1,123 @@
+apply plugin: 'com.android.application'
+
+def configuredAppId = project.findProperty('appId') ?: "com.hutaotik.app"
+def configuredAppName = configuredAppId == "com.hutaotik.admin" ? "Hutaotik Admin" : "HutaoTik"
+def configuredVersionCode = (project.findProperty('appVersionCode') ?: "25").toInteger()
+def configuredVersionName = project.findProperty('appVersionName') ?: "1.2.9"
+def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseKeystorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def hasReleaseSigning = [releaseKeystorePath, releaseKeystorePassword, releaseKeyAlias, releaseKeyPassword]
+    .every { value -> value != null && !value.trim().isEmpty() }
+
+android {
+    namespace "com.hutaotik.app"
+    compileSdk rootProject.ext.compileSdkVersion
+    sourceSets {
+        main {
+            if (configuredAppId == "com.hutaotik.admin") {
+                java.setSrcDirs(["src/admin/java"])
+                res.srcDirs += ["src/admin/res"]
+            }
+        }
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+    defaultConfig {
+        applicationId configuredAppId
+        manifestPlaceholders = [
+            appLabel: configuredAppName,
+            appIcon: configuredAppId == "com.hutaotik.admin" ? "ic_launcher_admin" : "ic_launcher",
+            appRoundIcon: configuredAppId == "com.hutaotik.admin" ? "ic_launcher_admin_round" : "ic_launcher_round"
+        ]
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
+        versionCode configuredVersionCode
+        versionName configuredVersionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+android.applicationVariants.all { variant ->
+    variant.outputs.all {
+        def appLabel = configuredAppId == "com.hutaotik.admin" ? "Hutaotik-Admin" : "Hutaotik"
+        outputFileName = "${appLabel}-${variant.buildType.name}.apk"
+    }
+}
+
+if (!hasReleaseSigning) {
+    tasks.configureEach { task ->
+        if (task.name.toLowerCase().contains("release")) {
+            task.doFirst {
+                throw new GradleException(
+                    "Set ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD to sign a release APK."
+                )
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+    implementation project(':capacitor-android')
+    if (configuredAppId != "com.hutaotik.admin") {
+        implementation "io.github.junkfood02.youtubedl-android:library:0.18.1"
+        implementation "io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1"
+    }
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (configuredAppId != "com.hutaotik.admin" && servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
