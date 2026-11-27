@@ -229,7 +229,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
 
   if (error) {
     return (
-      <div className="flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5">
+      <div className="animate-error-shake flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5">
         <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
         <p className="text-sm text-destructive leading-snug">{error}</p>
       </div>
@@ -241,7 +241,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   const selectedFormat = info.formats.find((format) => format.height === selectedHeight);
 
   return (
-    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm animate-in fade-in zoom-in-95 duration-300">
+    <div className="animate-card-bounce-in bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
       <div className="flex gap-4 p-4">
         <div className="relative w-32 shrink-0 rounded-xl overflow-hidden aspect-video bg-secondary border border-border">
           {info.thumbnail ? (
@@ -294,8 +294,8 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
       </div>
 
       {downloadSuccessInfo && (
-        <div className="mx-4 mb-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
-          <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
+        <div className="animate-success-pop mx-4 mb-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5 animate-pill-pop" />
           <div className="min-w-0">
             <p className="text-xs font-extrabold text-emerald-400">Download Complete!</p>
             <p className="text-[11px] text-foreground truncate mt-0.5">{downloadSuccessInfo.filename}</p>
@@ -312,26 +312,26 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
           <Button
             type="button"
             onClick={onOpenFolderPicker}
-            className="w-full h-11 font-bold text-sm rounded-xl"
+            className="w-full max-w-full h-auto min-h-11 py-2.5 px-4 whitespace-normal text-center leading-snug font-bold text-xs sm:text-sm rounded-xl"
           >
-            Select a download location
+            <span className="min-w-0">Select a download location</span>
           </Button>
         ) : (
           <Button
             type="button"
             onClick={handleDownload}
             disabled={!selectedFormat || downloading}
-            className="w-full h-11 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
+            className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
           >
             {downloading ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Downloading X video…</span>
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                <span className="min-w-0 truncate">Downloading X video…</span>
               </>
             ) : (
               <>
-                <Download className="w-4 h-4" />
-                <span>Save {selectedFormat?.qualityLabel ?? "X Video"} to {folderName}</span>
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="min-w-0 truncate">Save {selectedFormat?.qualityLabel ?? "X Video"} to {folderName}</span>
               </>
             )}
           </Button>

@@ -1,3 +1,8 @@
+import {
+  registerNativeDownloadProgressListener,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+
 export type SocialVideoPlatform = "pinterest" | "instagram";
 
 export interface NativeSocialVideoInfo {
@@ -64,6 +69,7 @@ function getNativeSocialBridge(): NativeSocialVideoBridge | undefined {
 function requestNativeSocialVideo(
   timeoutMs: number,
   startRequest: (bridge: NativeSocialVideoBridge, requestId: string) => void,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<NativeSocialVideoResponse> {
   const bridge = getNativeSocialBridge();
   if (!bridge?.getSocialVideoInfo || !bridge?.downloadSocialVideo) {
@@ -88,7 +94,8 @@ function requestNativeSocialVideo(
   };
 
   const requestId = `social-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return new Promise((resolve, reject) => {
+  const unregisterProgress = registerNativeDownloadProgressListener(requestId, onProgress);
+  return new Promise<NativeSocialVideoResponse>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error("On-device download request timed out."));
@@ -102,6 +109,8 @@ function requestNativeSocialVideo(
       pendingRequests.delete(requestId);
       reject(error instanceof Error ? error : new Error("Could not start on-device download."));
     }
+  }).finally(() => {
+    unregisterProgress();
   });
 }
 
@@ -140,17 +149,21 @@ export function downloadSocialVideoOnDevice(
   mediaType: "video" | "image",
   filename: string,
   folderName: string,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<{ filename: string; mediaType: "video" | "image" }> {
-  return requestNativeSocialVideo(600_000, (bridge, requestId) =>
-    bridge.downloadSocialVideo(
-      platform,
-      url,
-      directUrl ?? "",
-      mediaType,
-      filename,
-      folderName,
-      requestId,
-    ),
+  return requestNativeSocialVideo(
+    600_000,
+    (bridge, requestId) =>
+      bridge.downloadSocialVideo(
+        platform,
+        url,
+        directUrl ?? "",
+        mediaType,
+        filename,
+        folderName,
+        requestId,
+      ),
+    onProgress,
   ).then((response) => ({
     filename: response.filename || filename,
     mediaType: response.mediaType === "image" ? "image" : mediaType,

@@ -215,7 +215,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
 
   if (error) {
     return (
-      <div className="flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5">
+      <div className="animate-error-shake flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5">
         <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
         <p className="text-sm text-destructive leading-snug">{error}</p>
       </div>
@@ -229,7 +229,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
   const canDownload = !!selected;
 
   return (
-    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm animate-in fade-in zoom-in-95 duration-300">
+    <div className="animate-card-bounce-in bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
       {/* Header row */}
       <div className="flex gap-4 p-4">
         <div className="relative w-28 shrink-0 rounded-xl overflow-hidden aspect-video bg-secondary border border-border">
@@ -306,7 +306,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
 
       {/* Downloading Animation */}
       {downloading && (
-        <div className="px-4 pb-4 animate-in fade-in duration-300">
+        <div className="px-4 pb-4 animate-bounce-pop">
           <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
@@ -329,10 +329,10 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
 
       {/* Download Complete Visual */}
       {downloadSuccessInfo && !downloading && (
-        <div className="px-4 pb-4 animate-in fade-in zoom-in-95 duration-300">
+        <div className="px-4 pb-4 animate-success-pop">
           <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
             <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500 shrink-0 mt-0.5">
-              <CheckCircle2 className="w-5 h-5 animate-in zoom-in-50 duration-300" />
+              <CheckCircle2 className="w-5 h-5 animate-pill-pop" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-extrabold text-emerald-400 leading-tight">Facebook Download Complete!</p>
@@ -352,27 +352,27 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
           <Button
             type="button"
             onClick={onOpenFolderPicker}
-            className="w-full h-11 font-bold text-sm rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-500 hover:bg-amber-500/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full max-w-full h-auto min-h-11 py-2.5 px-4 whitespace-normal text-center leading-snug font-bold text-xs sm:text-sm rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-500 hover:bg-amber-500/25 flex items-center justify-center gap-2 cursor-pointer"
           >
-            <LockKeyhole className="w-4 h-4 text-amber-500 animate-pulse" />
-            <span>Download Locked – Select a download location to continue</span>
+            <LockKeyhole className="w-4 h-4 shrink-0 text-amber-500 animate-pulse" />
+            <span className="min-w-0">Download Locked – Select a download location</span>
           </Button>
         ) : (
           <Button
             type="button"
-            className="w-full h-11 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+            className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
             onClick={handleDownload}
             disabled={!canDownload || downloading}
           >
             {downloading ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Downloading Facebook video…</span>
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                <span className="min-w-0 truncate">Downloading Facebook video…</span>
               </>
             ) : (
               <>
-                <Download className="w-4 h-4" />
-                <span>Save {dlLabel || "Facebook Video"} to {folderName}</span>
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="min-w-0 truncate">Save {dlLabel || "Facebook Video"} to {folderName}</span>
               </>
             )}
           </Button>

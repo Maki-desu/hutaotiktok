@@ -26,6 +26,8 @@ import com.yausername.youtubedl_android.YoutubeDL;
 import com.yausername.youtubedl_android.YoutubeDLException;
 import com.yausername.youtubedl_android.YoutubeDLRequest;
 import com.yausername.youtubedl_android.mapper.VideoInfo;
+import kotlin.Unit;
+import kotlin.jvm.functions.Function3;
 
 import org.json.JSONException;
 import org.json.JSONArray;
@@ -33,6 +35,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -40,6 +43,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -49,9 +53,11 @@ public class MainActivity extends BridgeActivity {
     private static final int REQUEST_CODE_PICK_FOLDER = 9999;
     private static final String FACEBOOK_FOLDER_PREF = "facebook_download_folder_uri";
     private static final AtomicReference<String> pendingSharedText = new AtomicReference<>();
+    private final Map<String, File> pendingBlobFiles = new ConcurrentHashMap<>();
     private final ExecutorService facebookExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService youtubeExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService socialExecutor = Executors.newFixedThreadPool(2);
+    private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Object ytDlpUpdateLock = new Object();
     private volatile String facebookInitError;
@@ -217,10 +223,13 @@ public class MainActivity extends BridgeActivity {
         public void downloadFacebook(String url, String quality, String filename, String folderName, String requestId) {
             facebookExecutor.execute(() -> {
                 try {
+                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting Facebook download…");
                     ensureFacebookUrl(url);
                     ensureFacebookDownloader();
-                    File output = downloadFacebookFile(url, quality, filename);
+                    File output = downloadFacebookFile(url, quality, filename, requestId);
+                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
                     saveFacebookFile(output, filename, folderName);
+                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
                     sendFacebookResult(requestId, new JSONObject());
                 } catch (Exception e) {
                     sendFacebookError(requestId, e);
@@ -296,11 +305,14 @@ public class MainActivity extends BridgeActivity {
             youtubeExecutor.execute(() -> {
                 File outputDir = null;
                 try {
+                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting YouTube download…");
                     ensureYouTubeUrl(url);
                     ensureYouTubeDownloader();
-                    outputDir = downloadYouTubeFile(url, formatStr);
+                    outputDir = downloadYouTubeFile(url, formatStr, requestId);
                     File output = findYouTubeOutput(outputDir, "audio".equals(formatStr));
+                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
                     saveYouTubeFile(output, filename, folderName);
+                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
                     sendYouTubeResult(requestId, new JSONObject());
                 } catch (Exception e) {
                     sendYouTubeError(requestId, e);
@@ -341,15 +353,19 @@ public class MainActivity extends BridgeActivity {
                     if (!outputDir.mkdirs()) {
                         throw new IllegalStateException("Could not create temporary download directory.");
                     }
+                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting download…");
                     SocialDownloadResult result = downloadSocialMediaToTemp(
                         normalizedPlatform,
                         url,
                         directUrl,
                         mediaType,
-                        outputDir
+                        outputDir,
+                        requestId
                     );
                     String finalFilename = ensureFilenameExtension(filename, result.extension);
+                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
                     saveFileToUserFolder(result.file, finalFilename, folderName, result.mimeType);
+                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
                     JSONObject response = new JSONObject();
                     response.put("filename", finalFilename);
                     response.put("mediaType", result.mediaType);
@@ -358,6 +374,76 @@ public class MainActivity extends BridgeActivity {
                     sendSocialVideoError(requestId, e);
                 } finally {
                     if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String beginTempSave(String extension) {
+            try {
+                File dir = new File(getCacheDir(), "blob-saves");
+                if (!dir.exists() && !dir.mkdirs()) return "";
+                String safeExt = (extension != null ? extension : "bin")
+                    .replaceAll("[^a-zA-Z0-9]", "");
+                if (safeExt.isEmpty()) safeExt = "bin";
+                String saveId = UUID.randomUUID().toString();
+                File tempFile = new File(dir, saveId + "." + safeExt);
+                if (tempFile.exists() && !tempFile.delete()) return "";
+                pendingBlobFiles.put(saveId, tempFile);
+                return saveId;
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean appendTempSaveChunk(String saveId, String base64Chunk) {
+            if (saveId == null || base64Chunk == null) return false;
+            File tempFile = pendingBlobFiles.get(saveId);
+            if (tempFile == null) return false;
+            try {
+                byte[] decoded = android.util.Base64.decode(base64Chunk, android.util.Base64.DEFAULT);
+                try (FileOutputStream out = new FileOutputStream(tempFile, true)) {
+                    out.write(decoded);
+                }
+                return true;
+            } catch (Exception e) {
+                pendingBlobFiles.remove(saveId);
+                tempFile.delete();
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void abortTempSave(String saveId) {
+            if (saveId == null) return;
+            File tempFile = pendingBlobFiles.remove(saveId);
+            if (tempFile != null) tempFile.delete();
+        }
+
+        @JavascriptInterface
+        public void finishTempSave(
+            String saveId,
+            String filename,
+            String folderName,
+            String mimeType,
+            String requestId
+        ) {
+            storageExecutor.execute(() -> {
+                File tempFile = saveId != null ? pendingBlobFiles.remove(saveId) : null;
+                try {
+                    if (tempFile == null || !tempFile.exists() || tempFile.length() <= 0) {
+                        throw new IllegalStateException("Temporary download file was empty or missing.");
+                    }
+                    String resolvedMime = (mimeType != null && !mimeType.trim().isEmpty())
+                        ? mimeType.trim()
+                        : inferMimeTypeFromFilename(filename);
+                    saveFileToUserFolder(tempFile, filename, folderName, resolvedMime);
+                    sendStorageSaveResult(requestId, new JSONObject());
+                } catch (Exception e) {
+                    sendStorageSaveError(requestId, e);
+                } finally {
+                    if (tempFile != null) tempFile.delete();
                 }
             });
         }
@@ -397,11 +483,12 @@ public class MainActivity extends BridgeActivity {
             .addOption("--socket-timeout", "25");
     }
 
-    private File downloadYouTubeFile(String url, String formatStr) throws Exception {
+    private File downloadYouTubeFile(String url, String formatStr, String requestId) throws Exception {
         boolean audio = "audio".equals(formatStr);
         if (!audio && (formatStr == null || !formatStr.matches("\\d+(?:\\+\\d+)?"))) {
             throw new IllegalArgumentException("Select a valid YouTube video quality.");
         }
+        boolean multiStream = !audio && formatStr.contains("+");
 
         File outputDir = new File(new File(getCacheDir(), "youtube-downloads"), UUID.randomUUID().toString());
         if (!outputDir.mkdirs()) {
@@ -417,7 +504,15 @@ public class MainActivity extends BridgeActivity {
                 .addOption("--remux-video", "mp4");
         }
         try {
-            YoutubeDL.getInstance().execute(request);
+            YoutubeDL.getInstance().execute(
+                request,
+                requestId,
+                createYtDlpProgressCallback(
+                    requestId,
+                    multiStream,
+                    audio ? "Downloading YouTube audio…" : "Downloading YouTube video…"
+                )
+            );
         } catch (Exception e) {
             deleteYouTubeTempDirectory(outputDir);
             throw e;
@@ -453,80 +548,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void saveYouTubeFile(File source, String filename, String folderName) throws Exception {
-        String safeFilename = filename.replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFilename.isEmpty() || safeFilename.equals(".") || safeFilename.equals("..")) {
-            throw new IllegalArgumentException("Invalid YouTube download filename.");
-        }
-        String safeFolder = (folderName != null ? folderName : "")
-            .replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFolder.isEmpty() || safeFolder.equals(".") || safeFolder.equals("..")) {
-            safeFolder = "HutaoTik Downloads";
-        }
+        String safeFilename = filename != null ? filename.trim() : "";
         boolean audio = safeFilename.toLowerCase(Locale.ROOT).endsWith(".m4a");
-        String mimeType = audio ? "audio/mp4" : "video/mp4";
-        String folderUri = getSharedPreferences("hutaotik", MODE_PRIVATE)
-            .getString(FACEBOOK_FOLDER_PREF, null);
-
-        if (folderUri != null) {
-            DocumentFile directory = DocumentFile.fromTreeUri(this, Uri.parse(folderUri));
-            if (directory == null || !directory.canWrite()) {
-                throw new IllegalStateException("The selected download folder is no longer writable. Please select it again.");
-            }
-            DocumentFile oldFile = directory.findFile(safeFilename);
-            if (oldFile != null && !oldFile.delete()) {
-                throw new IllegalStateException("Could not replace the existing download.");
-            }
-            DocumentFile destination = directory.createFile(mimeType, safeFilename);
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination.getUri())) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyYouTubeFile(source, stream);
-                }
-            } catch (Exception e) {
-                destination.delete();
-                throw e;
-            }
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeFilename);
-            values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
-            values.put(
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                Environment.DIRECTORY_DOCUMENTS + "/" + safeFolder
-            );
-            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-            Uri destination = getContentResolver().insert(
-                MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-                values
-            );
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination)) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyYouTubeFile(source, stream);
-                }
-                ContentValues completed = new ContentValues();
-                completed.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                getContentResolver().update(destination, completed, null, null);
-            } catch (Exception e) {
-                getContentResolver().delete(destination, null, null);
-                throw e;
-            }
-            return;
-        }
-
-        File documents = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        File directory = new File(documents, safeFolder);
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw new IllegalStateException("Could not create the Documents download folder.");
-        }
-        try (OutputStream stream = new java.io.FileOutputStream(new File(directory, safeFilename))) {
-            copyYouTubeFile(source, stream);
-        }
+        saveFileToUserFolder(source, filename, folderName, audio ? "audio/mp4" : "video/mp4");
     }
 
     private void copyYouTubeFile(File source, OutputStream destination) throws Exception {
@@ -716,8 +740,10 @@ public class MainActivity extends BridgeActivity {
         String rawUrl,
         String directUrl,
         String mediaType,
-        File outputDir
+        File outputDir,
+        String requestId
     ) throws Exception {
+        String providerName = "instagram".equals(platform) ? "Instagram" : "Pinterest";
         String canonicalUrl = SocialMediaExtractor.resolveCanonicalUrl(platform, rawUrl);
 
         if ("image".equalsIgnoreCase(mediaType)) {
@@ -735,7 +761,14 @@ public class MainActivity extends BridgeActivity {
             }
             String[] extMime = SocialMediaExtractor.inferImageExtensionAndMime(imageUrl, "jpg").split("\\|");
             File tempImage = new File(outputDir, "social_image." + extMime[0]);
-            SocialMediaExtractor.downloadUrlToFile(platform, imageUrl, tempImage, true);
+            SocialMediaExtractor.downloadUrlToFile(
+                platform,
+                imageUrl,
+                tempImage,
+                true,
+                (percent, loaded, total) ->
+                    sendDownloadProgress(requestId, percent, loaded, total, -1, "Downloading " + providerName + " image…")
+            );
             return new SocialDownloadResult(tempImage, extMime[1], extMime[0], "image");
         }
 
@@ -746,7 +779,14 @@ public class MainActivity extends BridgeActivity {
         if (directIsAllowed && !directIsHls) {
             File directFile = new File(outputDir, "social_direct.mp4");
             try {
-                SocialMediaExtractor.downloadUrlToFile(platform, directUrl, directFile, false);
+                SocialMediaExtractor.downloadUrlToFile(
+                    platform,
+                    directUrl,
+                    directFile,
+                    false,
+                    (percent, loaded, total) ->
+                        sendDownloadProgress(requestId, percent, loaded, total, -1, "Downloading " + providerName + " video…")
+                );
                 return new SocialDownloadResult(directFile, "video/mp4", "mp4", "video");
             } catch (Exception e) {
                 directFile.delete();
@@ -759,7 +799,7 @@ public class MainActivity extends BridgeActivity {
         if (youtubeInitError == null) {
             try {
                 ensureYouTubeDownloader();
-                File downloaded = downloadSocialWithYtDlp(platform, canonicalUrl, outputDir);
+                File downloaded = downloadSocialWithYtDlp(platform, canonicalUrl, outputDir, requestId);
                 return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
             } catch (Exception e) {
                 ytDlpError = e;
@@ -768,7 +808,7 @@ public class MainActivity extends BridgeActivity {
 
             if (directIsAllowed && directIsHls) {
                 try {
-                    File downloaded = downloadSocialWithYtDlp(platform, directUrl, outputDir);
+                    File downloaded = downloadSocialWithYtDlp(platform, directUrl, outputDir, requestId);
                     return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
                 } catch (Exception e) {
                     ytDlpError = e;
@@ -785,12 +825,19 @@ public class MainActivity extends BridgeActivity {
             if (fresh.directUrl != null && !fresh.directUrl.equals(directUrl) &&
                 SocialMediaExtractor.isAllowedMediaUrl(platform, fresh.directUrl)) {
                 File freshFile = new File(outputDir, "social_fresh.mp4");
-                SocialMediaExtractor.downloadUrlToFile(platform, fresh.directUrl, freshFile, false);
+                SocialMediaExtractor.downloadUrlToFile(
+                    platform,
+                    fresh.directUrl,
+                    freshFile,
+                    false,
+                    (percent, loaded, total) ->
+                        sendDownloadProgress(requestId, percent, loaded, total, -1, "Downloading " + providerName + " video…")
+                );
                 return new SocialDownloadResult(freshFile, "video/mp4", "mp4", "video");
             }
             if (fresh.hlsUrl != null && youtubeInitError == null &&
                 SocialMediaExtractor.isAllowedMediaUrl(platform, fresh.hlsUrl)) {
-                File freshHls = downloadSocialWithYtDlp(platform, fresh.hlsUrl, outputDir);
+                File freshHls = downloadSocialWithYtDlp(platform, fresh.hlsUrl, outputDir, requestId);
                 return new SocialDownloadResult(freshHls, "video/mp4", "mp4", "video");
             }
         }
@@ -799,7 +846,13 @@ public class MainActivity extends BridgeActivity {
         throw new IllegalStateException("Could not download this " + platform + " video on device.");
     }
 
-    private File downloadSocialWithYtDlp(String platform, String targetUrl, File outputDir) throws Exception {
+    private File downloadSocialWithYtDlp(
+        String platform,
+        String targetUrl,
+        File outputDir,
+        String requestId
+    ) throws Exception {
+        String providerName = "instagram".equals(platform) ? "Instagram" : "Pinterest";
         File runDir = new File(outputDir, "ytdlp_" + UUID.randomUUID().toString());
         if (!runDir.mkdirs()) {
             throw new IllegalStateException("Could not prepare yt-dlp download directory.");
@@ -819,7 +872,11 @@ public class MainActivity extends BridgeActivity {
         }
 
         try {
-            YoutubeDL.getInstance().execute(request);
+            YoutubeDL.getInstance().execute(
+                request,
+                requestId,
+                createYtDlpProgressCallback(requestId, false, "Downloading " + providerName + " video…")
+            );
         } catch (Exception firstError) {
             if (!hasFfmpeg) throw firstError;
             // Retry with progressive MP4 fallback if remuxing/merging hits a codec snag
@@ -827,7 +884,11 @@ public class MainActivity extends BridgeActivity {
             YoutubeDLRequest fallbackRequest = createSocialVideoRequest(platform, targetUrl)
                 .addOption("-f", "best[ext=mp4]/best")
                 .addOption("-o", outputTemplate.getAbsolutePath());
-            YoutubeDL.getInstance().execute(fallbackRequest);
+            YoutubeDL.getInstance().execute(
+                fallbackRequest,
+                requestId,
+                createYtDlpProgressCallback(requestId, false, "Downloading " + providerName + " video…")
+            );
         }
 
         File[] files = runDir.listFiles();
@@ -887,25 +948,29 @@ public class MainActivity extends BridgeActivity {
 
         if (folderUri != null) {
             DocumentFile directory = DocumentFile.fromTreeUri(this, Uri.parse(folderUri));
-            if (directory == null || !directory.canWrite()) {
-                throw new IllegalStateException("The selected download folder is no longer writable. Please select it again.");
-            }
-            DocumentFile oldFile = directory.findFile(safeFilename);
-            if (oldFile != null && !oldFile.delete()) {
-                throw new IllegalStateException("Could not replace the existing download.");
-            }
-            DocumentFile destination = directory.createFile(mimeType, safeFilename);
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination.getUri())) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyYouTubeFile(source, stream);
+            if (directory != null && directory.exists() && directory.canWrite()) {
+                DocumentFile oldFile = directory.findFile(safeFilename);
+                if (oldFile != null && !oldFile.delete()) {
+                    throw new IllegalStateException("Could not replace the existing download.");
                 }
-            } catch (Exception e) {
-                destination.delete();
-                throw e;
+                DocumentFile destination = directory.createFile(mimeType, safeFilename);
+                if (destination != null) {
+                    try {
+                        try (OutputStream stream = getContentResolver().openOutputStream(destination.getUri())) {
+                            if (stream == null) throw new IllegalStateException("Could not open the destination file.");
+                            copyYouTubeFile(source, stream);
+                        }
+                        return;
+                    } catch (Exception e) {
+                        destination.delete();
+                        throw e;
+                    }
+                }
+            } else {
+                getSharedPreferences("hutaotik", MODE_PRIVATE).edit()
+                    .remove(FACEBOOK_FOLDER_PREF)
+                    .apply();
             }
-            return;
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -947,6 +1012,131 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private String inferMimeTypeFromFilename(String filename) {
+        String lower = filename != null ? filename.toLowerCase(Locale.ROOT) : "";
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".webm")) return "video/webm";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".m4a")) return "audio/mp4";
+        if (lower.endsWith(".zip")) return "application/zip";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".gif")) return "image/gif";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        return "application/octet-stream";
+    }
+
+    private Function3<Float, Long, String, Unit> createYtDlpProgressCallback(
+        String requestId,
+        boolean multiStream,
+        String defaultStatus
+    ) {
+        final long[] lastEmitAt = { 0L };
+        final int[] lastPercent = { -1 };
+        final String[] lastStatus = { "" };
+        final float[] prevRawProgress = { -1f };
+        final int[] streamIndex = { 0 };
+
+        return (progress, etaInSeconds, line) -> {
+            String safeLine = line != null ? line : "";
+            float raw = progress != null ? progress : -1f;
+            long eta = etaInSeconds != null ? etaInSeconds : -1L;
+
+            if (safeLine.contains("[Merger]") || safeLine.contains("[VideoRemuxer]")) {
+                if (!"Merging video & audio…".equals(lastStatus[0])) {
+                    lastStatus[0] = "Merging video & audio…";
+                    lastPercent[0] = 90;
+                    sendDownloadProgress(requestId, 90, 0, 0, -1, "Merging video & audio…");
+                }
+                return Unit.INSTANCE;
+            }
+            if (safeLine.contains("[ExtractAudio]")) {
+                if (!"Converting audio…".equals(lastStatus[0])) {
+                    lastStatus[0] = "Converting audio…";
+                    lastPercent[0] = 90;
+                    sendDownloadProgress(requestId, 90, 0, 0, -1, "Converting audio…");
+                }
+                return Unit.INSTANCE;
+            }
+
+            if (raw >= 0f) {
+                if (multiStream && streamIndex[0] == 0 && prevRawProgress[0] >= 80f && raw < 15f) {
+                    streamIndex[0] = 1;
+                }
+                prevRawProgress[0] = raw;
+
+                int mappedPercent;
+                String status;
+                if (multiStream) {
+                    if (streamIndex[0] == 0) {
+                        mappedPercent = 4 + Math.round((Math.min(100f, raw) / 100f) * 62f);
+                        status = "Downloading video stream…";
+                    } else {
+                        mappedPercent = 66 + Math.round((Math.min(100f, raw) / 100f) * 20f);
+                        status = "Downloading audio stream…";
+                    }
+                } else {
+                    mappedPercent = 4 + Math.round((Math.min(100f, raw) / 100f) * 86f);
+                    status = defaultStatus;
+                }
+
+                long now = System.currentTimeMillis();
+                if (mappedPercent != lastPercent[0] || !status.equals(lastStatus[0]) || now - lastEmitAt[0] >= 150) {
+                    if (mappedPercent >= lastPercent[0] || !status.equals(lastStatus[0])) {
+                        lastPercent[0] = Math.max(lastPercent[0], mappedPercent);
+                        lastStatus[0] = status;
+                        lastEmitAt[0] = now;
+                        sendDownloadProgress(requestId, lastPercent[0], 0, 0, eta, status);
+                    }
+                }
+            }
+            return Unit.INSTANCE;
+        };
+    }
+
+    private void sendDownloadProgress(
+        String requestId,
+        int percent,
+        long loadedBytes,
+        long totalBytes,
+        long etaSeconds,
+        String status
+    ) {
+        if (requestId == null || requestId.isEmpty()) return;
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("percent", Math.max(0, Math.min(100, percent)));
+            if (loadedBytes > 0) payload.put("loadedBytes", loadedBytes);
+            if (totalBytes > 0) payload.put("totalBytes", totalBytes);
+            if (etaSeconds > 0) payload.put("etaSeconds", etaSeconds);
+            if (status != null && !status.isEmpty()) payload.put("status", status);
+        } catch (JSONException e) {
+            return;
+        }
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null) return;
+        String script = "window.onNativeDownloadProgress && window.onNativeDownloadProgress(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(payload.toString()) + ");";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
+    private void sendStorageSaveError(String requestId, Exception error) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("error", error.getMessage() != null ? error.getMessage() : "Could not save downloaded file.");
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+        sendStorageSaveResult(requestId, result);
+    }
+
+    private void sendStorageSaveResult(String requestId, JSONObject result) {
+        WebView webView = getBridge().getWebView();
+        String script = "window.onNativeStorageSaveResult && window.onNativeStorageSaveResult(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
     private void sendSocialVideoError(String requestId, Exception error) {
         JSONObject result = new JSONObject();
         try {
@@ -981,7 +1171,7 @@ public class MainActivity extends BridgeActivity {
         webView.post(() -> webView.evaluateJavascript(script, null));
     }
 
-    private File downloadFacebookFile(String url, String quality, String filename) throws Exception {
+    private File downloadFacebookFile(String url, String quality, String filename, String requestId) throws Exception {
         boolean audio = filename.toLowerCase(Locale.ROOT).endsWith(".mp3");
         if (audio) ensureFacebookAudioTools();
 
@@ -1013,7 +1203,15 @@ public class MainActivity extends BridgeActivity {
                 .addOption("--merge-output-format", "mp4");
         }
 
-        YoutubeDL.getInstance().execute(request);
+        YoutubeDL.getInstance().execute(
+            request,
+            requestId,
+            createYtDlpProgressCallback(
+                requestId,
+                false,
+                audio ? "Downloading Facebook audio…" : "Downloading Facebook video…"
+            )
+        );
         File[] downloads = outputDir.listFiles();
         if (downloads != null) {
             for (File file : downloads) {
@@ -1024,79 +1222,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void saveFacebookFile(File source, String filename, String folderName) throws Exception {
-        String safeFilename = filename.replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFilename.isEmpty() || safeFilename.equals(".") || safeFilename.equals("..")) {
-            throw new IllegalArgumentException("Invalid Facebook download filename.");
-        }
-        String safeFolder = (folderName != null ? folderName : "")
-            .replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFolder.isEmpty() || safeFolder.equals(".") || safeFolder.equals("..")) {
-            safeFolder = "HutaoTik Downloads";
-        }
-
+        String safeFilename = filename != null ? filename.trim() : "";
         String mimeType = safeFilename.toLowerCase(Locale.ROOT).endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
-        String folderUri = getSharedPreferences("hutaotik", MODE_PRIVATE)
-            .getString(FACEBOOK_FOLDER_PREF, null);
-
-        if (folderUri != null) {
-            DocumentFile directory = DocumentFile.fromTreeUri(this, Uri.parse(folderUri));
-            if (directory == null || !directory.canWrite()) {
-                throw new IllegalStateException("The selected download folder is no longer writable. Please select it again.");
-            }
-            DocumentFile oldFile = directory.findFile(safeFilename);
-            if (oldFile != null && !oldFile.delete()) {
-                throw new IllegalStateException("Could not replace the existing download.");
-            }
-            DocumentFile destination = directory.createFile(mimeType, safeFilename);
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination.getUri())) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyFacebookFile(source, stream);
-                }
-            } catch (Exception e) {
-                destination.delete();
-                throw e;
-            }
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeFilename);
-            values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
-            values.put(
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                Environment.DIRECTORY_DOCUMENTS + "/" + safeFolder
-            );
-            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-            Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-            Uri destination = getContentResolver().insert(collection, values);
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination)) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyFacebookFile(source, stream);
-                }
-                ContentValues completed = new ContentValues();
-                completed.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                getContentResolver().update(destination, completed, null, null);
-            } catch (Exception e) {
-                getContentResolver().delete(destination, null, null);
-                throw e;
-            }
-            return;
-        }
-
-        File documents = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        File directory = new File(documents, safeFolder);
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw new IllegalStateException("Could not create the Documents download folder.");
-        }
-        File destination = new File(directory, safeFilename);
-        try (OutputStream stream = new java.io.FileOutputStream(destination)) {
-            copyFacebookFile(source, stream);
-        }
+        saveFileToUserFolder(source, filename, folderName, mimeType);
     }
 
     private void copyFacebookFile(File source, OutputStream destination) throws Exception {
@@ -1149,30 +1277,34 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE_PICK_FOLDER && resultCode == RESULT_OK && data != null) {
-            Uri treeUri = data.getData();
-            if (treeUri != null) {
-                try {
-                    getContentResolver().takePersistableUriPermission(
-                        treeUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    );
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-                getSharedPreferences("hutaotik", MODE_PRIVATE).edit()
-                    .putString(FACEBOOK_FOLDER_PREF, treeUri.toString())
-                    .apply();
-                DocumentFile pickedDir = DocumentFile.fromTreeUri(this, treeUri);
-                final String folderName = (pickedDir != null && pickedDir.getName() != null) ? pickedDir.getName() : "HutaoTik Downloads";
-
-                getBridge().getWebView().post(new Runnable() {
-                    @Override
-                    public void run() {
-                        String escaped = folderName.replace("'", "\\'");
-                        getBridge().getWebView().loadUrl("javascript:(function() { if (window.onAndroidFolderPicked) window.onAndroidFolderPicked('" + escaped + "'); })();");
+        if (requestCode == REQUEST_CODE_PICK_FOLDER) {
+            String pickedName = "";
+            if (resultCode == RESULT_OK && data != null) {
+                Uri treeUri = data.getData();
+                if (treeUri != null) {
+                    try {
+                        getContentResolver().takePersistableUriPermission(
+                            treeUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        );
+                    } catch (Exception e) {
+                        e.printStackTrace();
                     }
-                });
+                    getSharedPreferences("hutaotik", MODE_PRIVATE).edit()
+                        .putString(FACEBOOK_FOLDER_PREF, treeUri.toString())
+                        .apply();
+                    DocumentFile pickedDir = DocumentFile.fromTreeUri(this, treeUri);
+                    pickedName = (pickedDir != null && pickedDir.getName() != null)
+                        ? pickedDir.getName()
+                        : "HutaoTik Downloads";
+                }
+            }
+            final String finalPickedName = pickedName;
+            WebView webView = getBridge().getWebView();
+            if (webView != null) {
+                String script = "window.onAndroidFolderPicked && window.onAndroidFolderPicked(" +
+                    JSONObject.quote(finalPickedName) + ");";
+                webView.post(() -> webView.evaluateJavascript(script, null));
             }
         }
     }

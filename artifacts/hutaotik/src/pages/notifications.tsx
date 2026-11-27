@@ -13,6 +13,12 @@ import { BellOff, Loader2, ExternalLink, CheckCheck, LockKeyhole } from "lucide-
 import { formatDistanceToNow } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 
+function safeRelativeDate(raw: string): string {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "recently";
+  return formatDistanceToNow(parsed, { addSuffix: true });
+}
+
 export default function Notifications() {
   const queryClient = useQueryClient();
 
@@ -135,7 +141,7 @@ export default function Notifications() {
                       <div className="flex-1 min-w-0">
                         <p className="font-semibold text-foreground text-sm leading-snug">{notif.videoTitle}</p>
                         <p className="text-xs text-muted-foreground mt-1">
-                          {formatDistanceToNow(new Date(notif.createdAt), { addSuffix: true })}
+                          {safeRelativeDate(notif.createdAt)}
                         </p>
                       </div>
                       <div className="shrink-0 flex flex-col items-end gap-2">

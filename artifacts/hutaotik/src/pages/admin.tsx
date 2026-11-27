@@ -15,10 +15,12 @@ import {
   useRemoveMonitoredAccount,
   useToggleMonitoredAccount,
   getGetPublicSettingsQueryKey,
+  getListAnnouncementsQueryKey,
   setExtraHeaders,
   clearExtraHeaders,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { apiUrl } from "@/lib/api-url";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -74,7 +76,7 @@ function ImageDropZone({ label, value, onChange, aspect = "square" }: ImageDropZ
       const formData = new FormData();
       formData.append("image", file);
       const token = localStorage.getItem("admin_token");
-      const res = await fetch("/api/admin/upload-image", {
+      const res = await fetch(apiUrl("/api/admin/upload-image"), {
         method: "POST",
         headers: token ? { "x-admin-token": token } : {},
         body: formData,
@@ -310,15 +312,20 @@ function BrandingTab() {
     bannerUrl: ""
   });
 
-  if (settings && formData.siteTitle === "" && formData.footerText === "") {
-    setFormData({
-      siteTitle: settings.siteTitle || "",
-      footerText: settings.footerText || "",
-      adminName: settings.adminName || "",
-      logoUrl: settings.logoUrl || "",
-      bannerUrl: settings.bannerUrl || ""
-    });
-  }
+  const initializedRef = useRef(false);
+
+  useEffect(() => {
+    if (settings && !initializedRef.current) {
+      initializedRef.current = true;
+      setFormData({
+        siteTitle: settings.siteTitle || "",
+        footerText: settings.footerText || "",
+        adminName: settings.adminName || "",
+        logoUrl: settings.logoUrl || "",
+        bannerUrl: settings.bannerUrl || ""
+      });
+    }
+  }, [settings]);
 
   const handleSave = () => {
     updateMutation.mutate({ data: formData }, {
@@ -398,12 +405,17 @@ function SocialTab() {
     tiktokAvatarUrl: ""
   });
 
-  if (settings && formData.tiktokProfileUrl === "" && settings.tiktokProfileUrl) {
-    setFormData({
-      tiktokProfileUrl: settings.tiktokProfileUrl || "",
-      tiktokAvatarUrl: settings.tiktokAvatarUrl || ""
-    });
-  }
+  const initializedRef = useRef(false);
+
+  useEffect(() => {
+    if (settings && !initializedRef.current) {
+      initializedRef.current = true;
+      setFormData({
+        tiktokProfileUrl: settings.tiktokProfileUrl || "",
+        tiktokAvatarUrl: settings.tiktokAvatarUrl || ""
+      });
+    }
+  }, [settings]);
 
   const handleSave = () => {
     updateMutation.mutate({ data: formData }, {
@@ -471,7 +483,7 @@ function AnnouncementsTab() {
         toast({ title: "Announcement created" });
         setNewAnn({ content: "", colorType: "info", durationDays: 7, isPermanent: false });
         queryClient.invalidateQueries({ queryKey: getAdminListAnnouncementsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: ["/api/announcements"] });
+        queryClient.invalidateQueries({ queryKey: getListAnnouncementsQueryKey() });
       }
     });
   };
@@ -481,7 +493,7 @@ function AnnouncementsTab() {
       onSuccess: () => {
         toast({ title: "Announcement deleted" });
         queryClient.invalidateQueries({ queryKey: getAdminListAnnouncementsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: ["/api/announcements"] });
+        queryClient.invalidateQueries({ queryKey: getListAnnouncementsQueryKey() });
       }
     });
   };
@@ -490,7 +502,7 @@ function AnnouncementsTab() {
     updateMutation.mutate({ id, data: { isActive: !current } }, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getAdminListAnnouncementsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: ["/api/announcements"] });
+        queryClient.invalidateQueries({ queryKey: getListAnnouncementsQueryKey() });
       }
     });
   };
@@ -745,7 +757,7 @@ function ShowcaseManagerTab() {
   const loadVideos = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/showcase");
+      const res = await fetch(apiUrl("/api/showcase"));
       if (res.ok) setVideos(await res.json());
     } finally {
       setLoading(false);
@@ -756,7 +768,7 @@ function ShowcaseManagerTab() {
 
   const handleDelete = async (id: number) => {
     const token = localStorage.getItem("admin_token");
-    const res = await fetch(`/api/admin/showcase/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/showcase/${id}`), {
       method: "DELETE",
       headers: token ? { "x-admin-token": token } : {},
     });
@@ -770,7 +782,7 @@ function ShowcaseManagerTab() {
 
   const handlePin = async (id: number, isPinned: boolean) => {
     const token = localStorage.getItem("admin_token");
-    const res = await fetch(`/api/admin/showcase/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/showcase/${id}`), {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...(token ? { "x-admin-token": token } : {}) },
       body: JSON.stringify({ isPinned }),

@@ -167,6 +167,10 @@
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 
+  --spring-bounce: cubic-bezier(0.22, 1.14, 0.36, 1);
+  --spring-snappy: cubic-bezier(0.22, 1.08, 0.36, 1);
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+
   --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
   --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
   --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
@@ -280,13 +284,22 @@ html.theme-transition::after {
 .app-shell,
 .app-shell main,
 .app-shell main section,
-.app-shell main button,
 .app-shell footer {
   transition:
-    background-color 550ms ease,
-    border-color 550ms ease,
-    color 450ms ease,
-    box-shadow 550ms ease;
+    background-color 500ms ease,
+    border-color 500ms ease,
+    color 400ms ease,
+    box-shadow 450ms ease;
+}
+
+.app-shell main button,
+.app-shell main [role="button"],
+.app-shell main [role="combobox"] {
+  transition:
+    transform 260ms var(--spring-bounce),
+    background-color 240ms ease,
+    border-color 240ms ease,
+    color 200ms ease;
 }
 
 :root[data-ui-style="liquid-glass"] .app-shell main section,
@@ -391,11 +404,11 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-bounce-in var(--dropdown-open-duration, 720ms) cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) both;
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
-  animation: dropdown-bounce-out var(--dropdown-close-duration, 180ms) cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dropdown-bounce-out var(--dropdown-close-duration, 150ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] {
@@ -419,11 +432,15 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
-:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
 :root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
 :root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
-  animation: dropdown-item-drop var(--dropdown-item-duration, 420ms) cubic-bezier(0.18, 0.82, 0.25, 1) both;
-  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 38ms));
+  animation: dropdown-item-drop var(--dropdown-item-duration, 260ms) var(--ease-smooth) both;
+  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 20ms));
+}
+
+:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: dropdown-item-bounce var(--dropdown-item-duration, 280ms) var(--spring-bounce) both;
+  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 22ms));
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
@@ -457,51 +474,66 @@ html.theme-transition::after {
 }
 
 @keyframes dropdown-bounce-in {
-  0% { opacity: 0; transform: translateY(-10px) scale(0.94); }
-  58% { opacity: 1; transform: translateY(2px) scale(1.015); }
-  82% { transform: translateY(-1px) scale(0.998); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translate3d(0, -8px, 0) scale(0.96); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes dropdown-bounce-out {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to { opacity: 0; transform: translateY(-5px) scale(0.96); }
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to   { opacity: 0; transform: translate3d(0, -5px, 0) scale(0.97); }
 }
 
 @keyframes dropdown-slide-in {
-  from { opacity: 0; transform: translateY(-9px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translate3d(0, -8px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes dropdown-slide-out {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(-5px); }
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to   { opacity: 0; transform: translate3d(0, -5px, 0); }
 }
 
 @keyframes dropdown-fade-in {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 
 @keyframes dropdown-fade-out {
   from { opacity: 1; }
-  to { opacity: 0; }
+  to   { opacity: 0; }
 }
 
 @keyframes dropdown-item-drop {
   from {
     opacity: 0;
-    transform: translateY(-9px) scale(0.985);
+    transform: translate3d(0, -6px, 0);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes dropdown-item-bounce {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -7px, 0) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 .theme-preset-swatch {
   background-size: 200% 200%;
   animation: palette-shimmer 3s ease-in-out infinite;
+}
+
+.settings-disclosure {
+  transition:
+    border-color 240ms ease,
+    box-shadow 240ms ease;
 }
 
 .settings-disclosure > summary::-webkit-details-marker {
@@ -513,15 +545,24 @@ html.theme-transition::after {
 }
 
 .settings-disclosure > summary > svg {
-  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 300ms var(--spring-bounce);
+}
+
+.settings-disclosure[open] > :not(summary) {
+  animation: disclosure-bounce-in 300ms var(--spring-bounce) both;
+  transform-origin: top center;
+}
+
+@keyframes disclosure-bounce-in {
+  from { opacity: 0; transform: translate3d(0, -6px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 .screen-transition {
   min-height: 100%;
-  animation-duration: 760ms;
-  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-duration: 380ms;
+  animation-timing-function: var(--ease-smooth);
   animation-fill-mode: both;
-  will-change: opacity, transform;
 }
 
 .screen-transition--fade {
@@ -538,67 +579,61 @@ html.theme-transition::after {
 
 .screen-transition--bounce {
   animation-name: screen-bounce-in;
-  animation-duration: 1050ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-duration: 420ms;
+  animation-timing-function: var(--spring-bounce);
 }
 
 .screen-transition--elastic {
   animation-name: screen-elastic-in;
-  animation-duration: 1150ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-duration: 460ms;
+  animation-timing-function: cubic-bezier(0.22, 1.2, 0.36, 1);
 }
 
 .screen-transition--flip {
   animation-name: screen-flip-in;
-  animation-duration: 900ms;
-  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation-duration: 460ms;
+  animation-timing-function: var(--spring-bounce);
   transform-origin: center center;
 }
 
 .screen-transition--blur {
   animation-name: screen-blur-in;
-  animation-duration: 850ms;
+  animation-duration: 400ms;
 }
 
 @keyframes screen-fade-in {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 
 @keyframes screen-slide-in {
-  from { opacity: 0; transform: translateX(22px); }
-  to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; transform: translate3d(16px, 0, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes screen-zoom-in {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; transform: scale(0.975); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes screen-bounce-in {
-  0% { opacity: 0; transform: translateY(24px) scale(0.975); }
-  55% { opacity: 1; transform: translateY(-5px) scale(1.01); }
-  76% { transform: translateY(2px) scale(0.997); }
-  91% { transform: translateY(-1px) scale(1.001); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.985); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-elastic-in {
-  0% { opacity: 0; transform: translateX(28px) scale(0.965); }
-  55% { opacity: 1; transform: translateX(-6px) scale(1.01); }
-  76% { transform: translateX(3px) scale(0.997); }
-  91% { transform: translateX(-1px) scale(1.001); }
-  100% { opacity: 1; transform: translateX(0) scale(1); }
+  from { opacity: 0; transform: translate3d(20px, 0, 0) scale(0.98); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-flip-in {
-  from { opacity: 0; transform: perspective(900px) rotateY(-12deg) translateX(14px); }
-  to { opacity: 1; transform: perspective(900px) rotateY(0) translateX(0); }
+  from { opacity: 0; transform: perspective(900px) rotateY(-8deg) translate3d(10px, 0, 0); }
+  to   { opacity: 1; transform: perspective(900px) rotateY(0) translate3d(0, 0, 0); }
 }
 
 @keyframes screen-blur-in {
-  from { opacity: 0; filter: blur(12px); transform: scale(1.025); }
-  to { opacity: 1; filter: blur(0); transform: scale(1); }
+  from { opacity: 0; filter: blur(8px); transform: scale(1.015); }
+  to   { opacity: 1; filter: blur(0); transform: scale(1); }
 }
 
 @keyframes theme-color-wave {
@@ -618,24 +653,6 @@ html.theme-transition::after {
 @keyframes palette-shimmer {
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html.theme-transition::after,
-  .theme-preset-swatch,
-  .screen-transition,
-  .dropdown-motion {
-    animation: none;
-    will-change: auto;
-  }
-
-  .app-shell,
-  .app-shell main,
-  .app-shell main section,
-  .app-shell main button,
-  .app-shell footer {
-    transition-duration: 0.01ms;
-  }
 }
 
 @layer utilities {
@@ -721,15 +738,63 @@ button, a {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ── Lively Button Press & Glow Effects ─────────────────────── */
+/* ── Smooth, Subtle Spring Button Press (GPU Composited) ─────── */
 button, [role="button"], .interactive-element {
-  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, ring 0.2s ease;
+  transition:
+    transform 260ms var(--spring-bounce),
+    border-color 200ms ease,
+    background-color 200ms ease,
+    color 180ms ease;
 }
-button:active, [role="button"]:active, .interactive-element:active {
-  transform: scale(0.92) translateY(1px);
-  box-shadow: 0 0 25px rgba(249, 115, 22, 0.9), inset 0 0 12px rgba(249, 115, 22, 0.5);
-  outline: 2px solid hsl(var(--primary));
-  filter: brightness(1.15);
+
+@media (hover: hover) {
+  button:not(:disabled):hover,
+  [role="button"]:not([aria-disabled="true"]):hover,
+  .interactive-element:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+}
+
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active,
+.interactive-element:active {
+  transition-duration: 95ms;
+  transition-timing-function: var(--ease-smooth);
+  transform: scale(0.97);
+}
+
+[role="menuitem"]:active,
+[role="option"]:active,
+summary:active {
+  transform: scale(0.985);
+}
+
+/* ── Smooth Spring Dialog & Toast Surfaces ───────────────────── */
+.dialog-bounce-content[data-state="open"] {
+  animation: dialog-bounce-in 320ms var(--spring-bounce) both;
+}
+
+.dialog-bounce-content[data-state="closed"] {
+  animation: dialog-bounce-out 150ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.toast-bounce[data-state="open"] {
+  animation: toast-bounce-in 340ms var(--spring-bounce) both;
+}
+
+@keyframes dialog-bounce-in {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.96); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes dialog-bounce-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to   { opacity: 0; transform: translate3d(0, 6px, 0) scale(0.97); }
+}
+
+@keyframes toast-bounce-in {
+  from { opacity: 0; transform: translate3d(0, -12px, 0) scale(0.97); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 /* ── Ghost orbit animations ─────────────────────────────────── */
@@ -750,25 +815,193 @@ button:active, [role="button"]:active, .interactive-element:active {
   to   { transform: rotate(630deg) translateX(32px) rotate(-630deg); }
 }
 @keyframes ghost-bob {
-  from { transform: translateY(0px)  scale(1); }
-  to   { transform: translateY(-4px) scale(0.90); }
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(0, -4px, 0) scale(0.94); }
+}
+
+/* ── Reusable Smooth Spring Utilities ───────────────────────── */
+.animate-bounce-pop {
+  animation: bounce-pop-in 360ms var(--spring-bounce) both;
+}
+
+.animate-card-bounce-in {
+  animation: card-bounce-in 380ms var(--spring-bounce) both;
+}
+
+.animate-success-pop {
+  animation: success-rubber-pop 380ms var(--spring-bounce) both;
+}
+
+.animate-error-shake {
+  animation: error-bounce-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+.animate-splash-logo {
+  animation: splash-logo-bounce 520ms var(--spring-bounce) both;
+}
+
+.animate-pill-pop {
+  animation: pill-pop 260ms var(--spring-bounce) both;
+}
+
+.animate-float-gentle {
+  animation: float-up-down 2.8s ease-in-out infinite;
 }
 
 /* ── General UI animations ──────────────────────────────────── */
 @keyframes float-up-down {
-  0%,100% { transform: translateY(0px); }
-  50%     { transform: translateY(-6px); }
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50%      { transform: translate3d(0, -4px, 0); }
 }
+
 @keyframes pop-in {
-  0%   { transform: scale(0.8); opacity: 0; }
-  70%  { transform: scale(1.06); opacity: 1; }
-  100% { transform: scale(1);   opacity: 1; }
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
 }
+
+@keyframes bounce-pop-in {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.98); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes card-bounce-in {
+  from { opacity: 0; transform: translate3d(0, 12px, 0) scale(0.985); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes success-rubber-pop {
+  from { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.96); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes error-bounce-shake {
+  0%   { opacity: 0; transform: translate3d(0, 0, 0); }
+  25%  { opacity: 1; transform: translate3d(-4px, 0, 0); }
+  50%  { transform: translate3d(4px, 0, 0); }
+  75%  { transform: translate3d(-2px, 0, 0); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes splash-logo-bounce {
+  from { opacity: 0; transform: translate3d(0, -18px, 0) scale(0.9); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes pill-pop {
+  from { transform: scale(0.95); }
+  to   { transform: scale(1); }
+}
+
 @keyframes glow-pulse {
-  0%,100% { box-shadow: 0 0 0 0   rgba(249,115,22,0.0); }
-  50%     { box-shadow: 0 0 0 6px rgba(249,115,22,0.18); }
+  0%, 100% { box-shadow: 0 0 0 0   hsl(var(--primary) / 0); }
+  50%      { box-shadow: 0 0 0 7px hsl(var(--primary) / 0.22); }
 }
+
 @keyframes slide-up-fade-in {
-  from { transform: translateY(8px); opacity: 0; }
-  to   { transform: translateY(0);   opacity: 1; }
+  from { transform: translate3d(0, 10px, 0); opacity: 0; }
+  to   { transform: translate3d(0, 0, 0); opacity: 1; }
+}
+
+/* ── Bounce Animations Off & Reduced Motion Overrides ───────── */
+:root[data-bounce-animation="off"] {
+  --spring-bounce: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring-snappy: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-bounce-animation="off"] .animate-bounce-pop,
+:root[data-bounce-animation="off"] .animate-card-bounce-in,
+:root[data-bounce-animation="off"] .animate-success-pop,
+:root[data-bounce-animation="off"] .animate-splash-logo,
+:root[data-bounce-animation="off"] .animate-pill-pop,
+:root[data-bounce-animation="off"] .animate-bounce,
+:root[data-bounce-animation="off"] .animate-float-gentle,
+:root[data-bounce-animation="off"] .settings-disclosure[open] > :not(summary) {
+  animation: none !important;
+  will-change: auto;
+}
+
+:root[data-bounce-animation="off"] .dialog-bounce-content[data-state="open"] {
+  animation: dropdown-fade-in 160ms ease-out both;
+}
+
+:root[data-bounce-animation="off"] .dialog-bounce-content[data-state="closed"] {
+  animation: dropdown-fade-out 120ms ease-in both;
+}
+
+:root[data-bounce-animation="off"] .toast-bounce[data-state="open"] {
+  animation: dropdown-fade-in 180ms ease-out both;
+}
+
+:root[data-bounce-animation="off"][data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
+  animation: dropdown-fade-in var(--dropdown-open-duration, 200ms) ease-out both;
+}
+
+:root[data-bounce-animation="off"][data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
+  animation: dropdown-fade-out var(--dropdown-close-duration, 130ms) ease-in both;
+}
+
+:root[data-bounce-animation="off"][data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: none !important;
+}
+
+:root[data-bounce-animation="off"] .screen-transition--bounce,
+:root[data-bounce-animation="off"] .screen-transition--elastic {
+  animation-name: screen-fade-in;
+  animation-duration: 240ms;
+  animation-timing-function: ease-out;
+}
+
+:root[data-bounce-animation="off"] .app-shell main button,
+:root[data-bounce-animation="off"] .app-shell main [role="button"],
+:root[data-bounce-animation="off"] .app-shell main [role="combobox"],
+:root[data-bounce-animation="off"] button,
+:root[data-bounce-animation="off"] [role="button"],
+:root[data-bounce-animation="off"] .interactive-element {
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+:root[data-bounce-animation="off"] button:not(:disabled):hover,
+:root[data-bounce-animation="off"] [role="button"]:not([aria-disabled="true"]):hover,
+:root[data-bounce-animation="off"] .interactive-element:hover,
+:root[data-bounce-animation="off"] button:not(:disabled):active,
+:root[data-bounce-animation="off"] [role="button"]:not([aria-disabled="true"]):active,
+:root[data-bounce-animation="off"] .interactive-element:active {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-transition::after,
+  .theme-preset-swatch,
+  .screen-transition,
+  .dropdown-motion,
+  .dialog-bounce-content,
+  .toast-bounce,
+  .animate-bounce-pop,
+  .animate-card-bounce-in,
+  .animate-success-pop,
+  .animate-error-shake,
+  .animate-splash-logo,
+  .animate-pill-pop,
+  .animate-float-gentle,
+  .settings-disclosure[open] > :not(summary) {
+    animation: none !important;
+    will-change: auto;
+  }
+
+  .app-shell,
+  .app-shell main,
+  .app-shell main section,
+  .app-shell main button,
+  .app-shell main [role="button"],
+  .app-shell main [role="combobox"],
+  .app-shell footer,
+  button,
+  [role="button"],
+  .interactive-element {
+    transition-duration: 0.01ms !important;
+  }
 }

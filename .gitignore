@@ -12,7 +12,7 @@ out-tsc
 node_modules
 
 # IDEs and editors
-/.idea
+.idea/
 .project
 .classpath
 .c9/
@@ -44,6 +44,8 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
+# Local caches and build artifacts
 .cache/
 .local/
+*.apk
+Admin-signing-credentials.txt

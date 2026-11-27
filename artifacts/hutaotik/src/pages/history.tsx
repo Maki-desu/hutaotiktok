@@ -25,8 +25,15 @@ import {
   isNativeYouTubeAvailable,
 } from "@/lib/youtube-native";
 import { apiUrl } from "@/lib/api-url";
+import { fetchTikTokFromTikwm } from "@/lib/tikwm";
 import { fetchTwitterFromFx } from "@/lib/twitter-fx";
 import { useToast } from "@/hooks/use-toast";
+
+function safeRelativeDate(raw: string): string {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "recently";
+  return formatDistanceToNow(parsed, { addSuffix: true });
+}
 
 export default function History() {
   const [localRecords, setLocalRecords] = useState<LocalHistoryRecord[]>([]);
@@ -101,7 +108,7 @@ export default function History() {
         const video = await fetchTiktokVideo(
           { url: record.sourceUrl },
           { signal: AbortSignal.timeout(120_000) },
-        );
+        ).catch(() => fetchTikTokFromTikwm(record.sourceUrl, AbortSignal.timeout(30_000)));
         const isTikTokAudio = /(mp3|audio)/i.test(record.quality);
         downloadUrl = isTikTokAudio
           ? video.downloadUrls.audio
@@ -149,7 +156,7 @@ export default function History() {
         }).toString()}`);
       }
 
-      if (record.platform === "youtube" && isNativeYouTubeAvailable()) {
+      if (record.platform === "youtube" && record.sourceUrl && isNativeYouTubeAvailable()) {
         const nativeInfo = await fetchYouTubeInfoOnDevice(record.sourceUrl);
         let formatStr = "audio";
         if (!isYouTubeAudio) {
@@ -171,7 +178,7 @@ export default function History() {
         return;
       }
 
-      if (record.platform === "facebook" && isNativeFacebookAvailable()) {
+      if (record.platform === "facebook" && record.sourceUrl && isNativeFacebookAvailable()) {
         const quality = ext === "mp3" ? "audio" : record.quality.toLowerCase().includes("sd") ? "sd" : "hd";
         await downloadFacebookOnDevice(record.sourceUrl, quality, filename, folderName);
         setProgress(100);
@@ -189,7 +196,10 @@ export default function History() {
       const requestUrl = record.platform === "tiktok"
         ? apiUrl(`/api/proxy-download?${new URLSearchParams({ url: downloadUrl, filename }).toString()}`)
         : downloadUrl;
-      const res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
+      let res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
+      if (!res.ok && record.platform === "tiktok") {
+        res = await fetch(downloadUrl, { referrerPolicy: "no-referrer" });
+      }
       if (!res.ok) throw new Error("Server returned HTTP " + res.status);
 
       const contentLength = res.headers.get("content-length");
@@ -240,7 +250,7 @@ export default function History() {
   const allRecords: LocalHistoryRecord[] = [
     ...localRecords,
     ...(apiHistory || []).map((rec: any) => ({
-      id: rec.id,
+      id: `api-${rec.id}`,
       title: rec.title || "Downloaded Video",
       author: rec.author || rec.authorUsername || "Creator",
       authorUsername: rec.authorUsername || "user",
@@ -308,7 +318,7 @@ export default function History() {
           </div>
 
           <div className="space-y-3">
-            {allRecords.map((record) => {
+            {allRecords.map((record, index) => {
               const isDownloadingThis = redownloadingId === record.id;
               const PlatformIcon = record.platform === "youtube"
                 ? SiYoutube
@@ -323,7 +333,11 @@ export default function History() {
                     : SiTiktok;
 
               return (
-                <Card key={record.id} className="border-border bg-card overflow-hidden hover:border-primary/40 transition-all duration-200 shadow-sm">
+                <Card
+                  key={record.id}
+                  style={{ animationDelay: `${Math.min(index, 8) * 55}ms` }}
+                  className="animate-card-bounce-in border-border bg-card overflow-hidden hover:border-primary/40 transition-all duration-200 shadow-sm"
+                >
                   <CardContent className="p-3 flex gap-3 items-center">
                     <div className="w-20 h-20 rounded-xl bg-secondary shrink-0 relative overflow-hidden border border-border">
                       {record.thumbnail ? (
@@ -340,14 +354,14 @@ export default function History() {
 
                     <div className="flex-1 min-w-0 space-y-1.5">
                       <h3 className="font-bold text-xs truncate leading-snug">{record.title || "Downloaded Video"}</h3>
-                      <p className="text-[11px] text-muted-foreground truncate">@{record.authorUsername || record.author}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">@{String(record.authorUsername || record.author).replace(/^@/, "")}</p>
 
                       <div className="flex items-center justify-between pt-0.5">
                         <Badge variant="secondary" className="text-[9px] px-2 py-0 h-4 bg-primary/15 border-primary/30 text-primary font-bold uppercase">
                           {record.quality}
                         </Badge>
                         <span className="text-[10px] text-muted-foreground font-mono">
-                          {formatDistanceToNow(new Date(record.downloadedAt), { addSuffix: true })}
+                          {safeRelativeDate(record.downloadedAt)}
                         </span>
                       </div>
                     </div>

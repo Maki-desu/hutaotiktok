@@ -696,11 +696,25 @@ public final class SocialMediaExtractor {
         return extractInstagramFromParsedObject(shortcode, canonicalUrl, urlIndicatesVideo, parsed);
     }
 
+    public interface ProgressListener {
+        void onProgress(int percent, long loadedBytes, long totalBytes);
+    }
+
     public static void downloadUrlToFile(
         String platform,
         String mediaUrl,
         File destination,
         boolean expectImage
+    ) throws IOException {
+        downloadUrlToFile(platform, mediaUrl, destination, expectImage, null);
+    }
+
+    public static void downloadUrlToFile(
+        String platform,
+        String mediaUrl,
+        File destination,
+        boolean expectImage,
+        ProgressListener listener
     ) throws IOException {
         if (!isAllowedMediaUrl(platform, mediaUrl)) {
             throw new IllegalArgumentException("Media URL host is not allowed for " + platform + ".");
@@ -743,9 +757,16 @@ public final class SocialMediaExtractor {
                     throw new IOException("Unexpected image content type: " + lowerType);
                 }
 
+                long contentLength = conn.getContentLengthLong();
                 long totalBytes = 0;
+                long lastEmitAt = 0;
+                int lastPercent = -1;
                 byte[] headerProbe = new byte[16];
                 int headerProbeLen = 0;
+
+                if (listener != null) {
+                    listener.onProgress(4, 0, contentLength > 0 ? contentLength : 0);
+                }
 
                 try (InputStream input = new BufferedInputStream(conn.getInputStream());
                      OutputStream output = new FileOutputStream(destination)) {
@@ -759,6 +780,21 @@ public final class SocialMediaExtractor {
                         }
                         output.write(buffer, 0, read);
                         totalBytes += read;
+                        if (listener != null) {
+                            int percent;
+                            if (contentLength > 0) {
+                                percent = 4 + (int) Math.min(88, Math.round((totalBytes * 88.0) / contentLength));
+                            } else {
+                                double curve = 1.0 - Math.exp(-totalBytes / (3.0 * 1024.0 * 1024.0));
+                                percent = 4 + (int) Math.min(84, Math.round(curve * 84.0));
+                            }
+                            long now = System.currentTimeMillis();
+                            if (percent != lastPercent || now - lastEmitAt >= 120) {
+                                lastPercent = percent;
+                                lastEmitAt = now;
+                                listener.onProgress(percent, totalBytes, contentLength > 0 ? contentLength : 0);
+                            }
+                        }
                     }
                 }
 
@@ -769,6 +805,9 @@ public final class SocialMediaExtractor {
                 if (looksLikeHtmlOrJson(headerProbe, headerProbeLen)) {
                     destination.delete();
                     throw new IOException("Downloaded response was text/HTML instead of media.");
+                }
+                if (listener != null) {
+                    listener.onProgress(92, totalBytes, contentLength > 0 ? contentLength : totalBytes);
                 }
                 return;
             } finally {

@@ -1,4 +1,4 @@
-import { useState, useRef, ChangeEvent } from "react";
+import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
@@ -28,15 +28,23 @@ function formatBytes(bytes: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
-function getSupportedMimeType(): string {
+function getSupportedMimeType(withAudio: boolean): string {
   if (typeof MediaRecorder === "undefined") return "";
-  const types = [
-    "video/webm;codecs=vp9",
-    "video/webm;codecs=vp8",
-    "video/webm",
-    "video/mp4;codecs=avc1",
-    "video/mp4",
-  ];
+  const types = withAudio
+    ? [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4",
+      ]
+    : [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+        "video/mp4;codecs=avc1",
+        "video/mp4",
+      ];
   for (const t of types) {
     if (MediaRecorder.isTypeSupported(t)) {
       return t;
@@ -44,6 +52,11 @@ function getSupportedMimeType(): string {
   }
   return "";
 }
+
+const mediaAudioCache = new WeakMap<
+  HTMLMediaElement,
+  { ctx: AudioContext; dest: MediaStreamAudioDestinationNode; speakerGain: GainNode }
+>();
 
 export function TaoCompressorSection({
   folderName,
@@ -69,6 +82,28 @@ export function TaoCompressorSection({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const urlsRef = useRef<{ video: string | null; compressed: string | null }>({
+    video: null,
+    compressed: null,
+  });
+
+  useEffect(() => {
+    urlsRef.current = { video: videoSrc, compressed: compressedUrl };
+  }, [videoSrc, compressedUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (urlsRef.current.video) URL.revokeObjectURL(urlsRef.current.video);
+      if (urlsRef.current.compressed) URL.revokeObjectURL(urlsRef.current.compressed);
+    };
+  }, []);
+
+  const markSettingsDirty = () => {
+    if (hasCompressed) {
+      setHasCompressed(false);
+      setDownloadSuccessInfo(null);
+    }
+  };
 
   const handleVideoUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -98,6 +133,7 @@ export function TaoCompressorSection({
   };
 
   const applyPreset = (p: "small" | "balanced" | "high") => {
+    markSettingsDirty();
     setPreset(p);
     if (p === "small") {
       setCrfQuality(28);
@@ -113,12 +149,15 @@ export function TaoCompressorSection({
 
   const compressVideo = async () => {
     if (!videoSrc || !videoRef.current) return;
+    if (compressedUrl) {
+      URL.revokeObjectURL(compressedUrl);
+      setCompressedUrl(null);
+    }
     setIsCompressing(true);
     setCompressProgress(5);
 
     const video = videoRef.current;
     let stream: MediaStream | null = null;
-    video.muted = true;
     video.playsInline = true;
 
     try {
@@ -154,11 +193,6 @@ export function TaoCompressorSection({
         throw new Error("Video compression is not supported by this browser.");
       }
 
-      const mimeType = getSupportedMimeType();
-      if (!mimeType) {
-        throw new Error("This browser does not support a compatible video encoder.");
-      }
-
       let w = video.videoWidth;
       let h = video.videoHeight;
       if (w === 0 || h === 0) throw new Error("Video dimensions could not be read.");
@@ -190,10 +224,60 @@ export function TaoCompressorSection({
 
       const targetBitrate = Math.max(250_000, Math.round(2_000_000 * Math.pow(0.85, crfQuality - 18)));
       stream = canvas.captureStream(24);
-      const recorder = new MediaRecorder(stream, {
-        mimeType,
-        videoBitsPerSecond: targetBitrate,
-      });
+
+      // Attach source audio track while muting speaker output via GainNode during compression
+      let hasAudioTrack = false;
+      try {
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtx) {
+          let cached = mediaAudioCache.get(video);
+          if (!cached) {
+            const audioCtx = new AudioCtx();
+            const source = audioCtx.createMediaElementSource(video);
+            const dest = audioCtx.createMediaStreamDestination();
+            const speakerGain = audioCtx.createGain();
+            source.connect(dest);
+            source.connect(speakerGain);
+            speakerGain.connect(audioCtx.destination);
+            cached = { ctx: audioCtx, dest, speakerGain };
+            mediaAudioCache.set(video, cached);
+          }
+          cached.speakerGain.gain.value = 0;
+          if (cached.ctx.state === "suspended") {
+            await cached.ctx.resume();
+          }
+          const audioTrack = cached.dest.stream.getAudioTracks()[0];
+          if (audioTrack && audioTrack.readyState === "live") {
+            video.muted = false;
+            stream.addTrack(audioTrack);
+            hasAudioTrack = true;
+          }
+        }
+      } catch {
+        video.muted = true;
+      }
+
+      const mimeType = getSupportedMimeType(hasAudioTrack) || getSupportedMimeType(false);
+      if (!mimeType) {
+        throw new Error("This browser does not support a compatible video encoder.");
+      }
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, {
+          mimeType,
+          videoBitsPerSecond: targetBitrate,
+          ...(hasAudioTrack ? { audioBitsPerSecond: 96_000 } : {}),
+        });
+      } catch {
+        // Fallback to video-only stream if combined audio+video encoding is unsupported
+        stream = canvas.captureStream(24);
+        const fallbackMime = getSupportedMimeType(false);
+        recorder = new MediaRecorder(stream, {
+          mimeType: fallbackMime,
+          videoBitsPerSecond: targetBitrate,
+        });
+      }
       const duration = video.duration;
       if (!Number.isFinite(duration) || duration <= 0) {
         throw new Error("The video duration could not be read.");
@@ -272,7 +356,10 @@ export function TaoCompressorSection({
         variant: "destructive",
       });
     } finally {
-      stream?.getTracks().forEach((track) => track.stop());
+      const cachedAudio = mediaAudioCache.get(video);
+      if (cachedAudio) cachedAudio.speakerGain.gain.value = 1;
+      video.muted = true;
+      stream?.getVideoTracks().forEach((track) => track.stop());
       setIsCompressing(false);
     }
   };
@@ -494,7 +581,10 @@ export function TaoCompressorSection({
               </div>
               <Slider
                 value={[crfQuality]}
-                onValueChange={(v) => setCrfQuality(v[0])}
+                onValueChange={(v) => {
+                  markSettingsDirty();
+                  setCrfQuality(v[0]);
+                }}
                 min={18}
                 max={32}
                 step={1}
@@ -511,7 +601,10 @@ export function TaoCompressorSection({
                   <button
                     key={scale}
                     type="button"
-                    onClick={() => setTargetScale(scale)}
+                    onClick={() => {
+                      markSettingsDirty();
+                      setTargetScale(scale);
+                    }}
                     className={`px-3 py-1 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
                       targetScale === scale
                         ? "bg-primary border-primary text-primary-foreground"
@@ -568,10 +661,10 @@ export function TaoCompressorSection({
                 type="button"
                 onClick={handleDownloadCompressed}
                 disabled={isCompressing}
-                className="flex-1 h-11 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
+                className="flex-1 min-w-0 max-w-full overflow-hidden h-11 px-4 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
               >
-                <Download className="w-4 h-4" />
-                <span>Download Compressed Video</span>
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="min-w-0 truncate">Download Compressed Video</span>
               </Button>
             )}
           </div>

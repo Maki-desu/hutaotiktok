@@ -13,6 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import {
+  loadBounceAnimationEnabled,
+  saveBounceAnimationEnabled,
+} from "@/lib/bounce-animation";
 import {
   loadScreenTransition,
   saveScreenTransition,
@@ -111,6 +116,10 @@ export default function Settings() {
   const [transitionError, setTransitionError] = useState<string | null>(null);
   const [uiStyle, setUiStyle] = useState<UiStyle>(() => loadUiStyle());
   const [uiStyleError, setUiStyleError] = useState<string | null>(null);
+  const [bounceEnabled, setBounceEnabled] = useState<boolean>(() =>
+    loadBounceAnimationEnabled(),
+  );
+  const [bounceError, setBounceError] = useState<string | null>(null);
   const [dropdownAnimation, setDropdownAnimation] = useState<DropdownAnimation>(
     () => loadDropdownAnimation(),
   );
@@ -173,6 +182,17 @@ export default function Settings() {
     } catch (error) {
       console.error("Could not save the UI style.", error);
       setUiStyleError("Could not save this UI style. Check that storage is available and try again.");
+    }
+  };
+
+  const updateBounceAnimation = (enabled: boolean) => {
+    try {
+      saveBounceAnimationEnabled(enabled);
+      setBounceEnabled(enabled);
+      setBounceError(null);
+    } catch (error) {
+      console.error("Could not save the bounce animation setting.", error);
+      setBounceError("Could not save this animation setting. Check that storage is available and try again.");
     }
   };
 
@@ -299,7 +319,7 @@ export default function Settings() {
       </header>
 
       <div className="space-y-3">
-      <details className="settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm">
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "0ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">Themes</span>
@@ -354,7 +374,7 @@ export default function Settings() {
         </div>
       </details>
 
-      <details className="settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm">
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "60ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">Interface Style</span>
@@ -384,7 +404,32 @@ export default function Settings() {
         </div>
       </details>
 
-      <details className="settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm">
+      <div
+        className="animate-card-bounce-in rounded-2xl border border-border bg-card p-4 shadow-sm"
+        style={{ animationDelay: "90ms" }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <label htmlFor="bounce-animations-switch" className="cursor-pointer">
+            <span className="block text-base font-semibold text-card-foreground">Bounce Animations</span>
+            <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
+              Enable or turn off bouncy spring effects on cards, buttons, popups, menus, and screens.
+            </span>
+          </label>
+          <Switch
+            id="bounce-animations-switch"
+            checked={bounceEnabled}
+            onCheckedChange={updateBounceAnimation}
+            aria-label="Bounce animations"
+          />
+        </div>
+        {bounceError && (
+          <p role="alert" className="mt-3 text-xs text-destructive">
+            {bounceError}
+          </p>
+        )}
+      </div>
+
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "120ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">Dropdown Animation</span>
@@ -408,6 +453,12 @@ export default function Settings() {
             <SelectItem value="none">None — no animation</SelectItem>
           </SelectContent>
         </Select>
+
+        {!bounceEnabled && dropdownAnimation === "bounce" && (
+          <p className="text-xs text-muted-foreground">
+            Using smooth fade while Bounce Animations is turned off.
+          </p>
+        )}
 
         <label className="mb-2 mt-4 block text-sm font-semibold text-foreground" id="dropdown-speed-label">
           Animation speed
@@ -436,7 +487,7 @@ export default function Settings() {
         </div>
       </details>
 
-      <details className="settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm">
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "180ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">App Branding</span>
@@ -465,7 +516,7 @@ export default function Settings() {
         </div>
       </details>
 
-      <details className="settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm">
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "240ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">Screen Transitions</span>
@@ -492,6 +543,12 @@ export default function Settings() {
             <SelectItem value="none">None — no screen animation</SelectItem>
           </SelectContent>
         </Select>
+
+        {!bounceEnabled && (screenTransition === "bounce" || screenTransition === "elastic") && (
+          <p className="text-xs text-muted-foreground">
+            Using Fade while Bounce Animations is turned off.
+          </p>
+        )}
 
         {transitionError && (
           <p role="alert" className="text-xs text-destructive">

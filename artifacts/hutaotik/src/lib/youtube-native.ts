@@ -1,3 +1,8 @@
+import {
+  registerNativeDownloadProgressListener,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+
 export interface NativeYouTubeFormat {
   formatStr: string;
   qualityLabel: string;
@@ -34,7 +39,8 @@ const pendingRequests = new Map<
 >();
 
 function requestNativeYouTube(
-  startRequest: (bridge: NativeYouTubeBridge, requestId: string) => void
+  startRequest: (bridge: NativeYouTubeBridge, requestId: string) => void,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<NativeYouTubeResponse> {
   const bridge = (window as Window & { AndroidStorageBridge?: NativeYouTubeBridge }).AndroidStorageBridge;
   if (!bridge) return Promise.reject(new Error("On-device YouTube downloads are unavailable."));
@@ -54,7 +60,8 @@ function requestNativeYouTube(
   };
 
   const requestId = `youtube-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return new Promise((resolve, reject) => {
+  const unregisterProgress = registerNativeDownloadProgressListener(requestId, onProgress);
+  return new Promise<NativeYouTubeResponse>((resolve, reject) => {
     pendingRequests.set(requestId, { resolve, reject });
     try {
       startRequest(bridge, requestId);
@@ -62,6 +69,8 @@ function requestNativeYouTube(
       pendingRequests.delete(requestId);
       reject(error instanceof Error ? error : new Error("Could not start YouTube download."));
     }
+  }).finally(() => {
+    unregisterProgress();
   });
 }
 
@@ -92,9 +101,11 @@ export function downloadYouTubeOnDevice(
   url: string,
   formatStr: string,
   filename: string,
-  folderName: string
+  folderName: string,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<void> {
-  return requestNativeYouTube((bridge, requestId) =>
-    bridge.downloadYouTube(url, formatStr, filename, folderName, requestId)
+  return requestNativeYouTube(
+    (bridge, requestId) => bridge.downloadYouTube(url, formatStr, filename, folderName, requestId),
+    onProgress,
   ).then(() => undefined);
 }

@@ -22,9 +22,9 @@ export default function TaotoolsPage() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 max-w-2xl mx-auto">
+    <div className="space-y-6 max-w-2xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="animate-bounce-pop flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-syne font-bold flex items-center gap-2">
             <Wand2 className="w-6 h-6 text-primary animate-pulse" />

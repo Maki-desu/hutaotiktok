@@ -5,6 +5,11 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { loadScreenTransition } from "@/lib/screen-transitions";
 import {
+  applyBounceAnimation,
+  loadBounceAnimationEnabled,
+  onBounceAnimationChanged,
+} from "@/lib/bounce-animation";
+import {
   loadDropdownAnimation,
   loadDropdownSpeed,
   saveDropdownAnimation,
@@ -75,6 +80,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 
 function Router() {
   const [route, setRoute] = useState(() => window.location.hash.replace("#", "") || "/");
+  const [bounceEnabled, setBounceEnabled] = useState(() => loadBounceAnimationEnabled());
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -84,8 +90,12 @@ function Router() {
 
     window.addEventListener("hashchange", handleHashChange);
     handleHashChange();
+    const unsubscribeBounce = onBounceAnimationChanged(setBounceEnabled);
 
-    return () => window.removeEventListener("hashchange", handleHashChange);
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+      unsubscribeBounce();
+    };
   }, []);
 
   const cleanRoute = route.split("?")[0];
@@ -127,7 +137,11 @@ function Router() {
       screen = <NotFound />;
   }
 
-  const transition = loadScreenTransition();
+  const savedTransition = loadScreenTransition();
+  const transition =
+    !bounceEnabled && (savedTransition === "bounce" || savedTransition === "elastic")
+      ? "fade"
+      : savedTransition;
   return (
     <div
       key={cleanRoute}
@@ -147,6 +161,7 @@ function App() {
     const customization = loadThemeCustomization();
     if (customization) applyThemeCustomization(customization);
     saveUiStyle(loadUiStyle());
+    applyBounceAnimation(loadBounceAnimationEnabled());
     saveDropdownAnimation(loadDropdownAnimation());
     saveDropdownSpeed(loadDropdownSpeed());
 

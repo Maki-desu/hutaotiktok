@@ -8,19 +8,27 @@ export type DropdownSpeed = (typeof DROPDOWN_SPEEDS)[number];
 
 const STORAGE_KEY = "hutaotik-dropdown-animation";
 const SPEED_STORAGE_KEY = "hutaotik-dropdown-speed";
+const BOUNCY_DEFAULT_MIGRATION_KEY = "hutaotik-bouncy-dropdown-v1";
 const SPEED_VARIABLES: Record<DropdownSpeed, [string, string, string, string]> = {
-  slow: ["850ms", "260ms", "620ms", "75ms"],
-  normal: ["560ms", "180ms", "420ms", "38ms"],
-  fast: ["300ms", "110ms", "240ms", "18ms"],
+  slow: ["520ms", "200ms", "380ms", "34ms"],
+  normal: ["340ms", "150ms", "280ms", "22ms"],
+  fast: ["220ms", "100ms", "180ms", "12ms"],
 };
 
 export function loadDropdownAnimation(): DropdownAnimation {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return DROPDOWN_ANIMATIONS.find((animation) => animation === stored) ?? "smooth";
+    if (!localStorage.getItem(BOUNCY_DEFAULT_MIGRATION_KEY)) {
+      localStorage.setItem(BOUNCY_DEFAULT_MIGRATION_KEY, "1");
+      if (!stored || stored === "smooth") {
+        localStorage.setItem(STORAGE_KEY, "bounce");
+        return "bounce";
+      }
+    }
+    return DROPDOWN_ANIMATIONS.find((animation) => animation === stored) ?? "bounce";
   } catch (error) {
     console.error("Could not load the saved dropdown animation.", error);
-    return "smooth";
+    return "bounce";
   }
 }
 

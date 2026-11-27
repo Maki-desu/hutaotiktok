@@ -301,7 +301,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
 
   if (error) {
     return (
-      <div className="bg-card rounded-2xl border border-destructive/30 p-4 space-y-3">
+      <div className="animate-error-shake bg-card rounded-2xl border border-destructive/30 p-4 space-y-3">
         <div className="flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
           <div className="min-w-0 flex-1">
@@ -328,7 +328,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
   const isImage = info.mediaType === "image";
 
   return (
-    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm animate-in fade-in zoom-in-95 duration-300">
+    <div className="animate-card-bounce-in bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
       <div className="flex gap-4 p-4">
         <div className="relative w-32 shrink-0 rounded-xl overflow-hidden aspect-video bg-secondary border border-border flex items-center justify-center">
           {info.thumbnail && !thumbFailed ? (
@@ -364,7 +364,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       </div>
 
       {downloading && (
-        <div className="px-4 pb-3 animate-in fade-in duration-300">
+        <div className="px-4 pb-3 animate-bounce-pop">
           <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
@@ -388,10 +388,10 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       )}
 
       {downloadSuccessInfo && !downloading && (
-        <div className="px-4 pb-3 animate-in fade-in zoom-in-95 duration-300">
+        <div className="px-4 pb-3 animate-success-pop">
           <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
             <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500 shrink-0 mt-0.5">
-              <CheckCircle2 className="w-5 h-5" />
+              <CheckCircle2 className="w-5 h-5 animate-pill-pop" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-extrabold text-emerald-400 leading-tight">
@@ -422,35 +422,37 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
           <Button
             type="button"
             onClick={onOpenFolderPicker}
-            className="w-full h-11 font-bold text-sm rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-500 hover:bg-amber-500/25 flex items-center justify-center gap-2"
+            className="w-full max-w-full h-auto min-h-11 py-2.5 px-4 whitespace-normal text-center leading-snug font-bold text-xs sm:text-sm rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-500 hover:bg-amber-500/25 flex items-center justify-center gap-2"
           >
-            <LockKeyhole className="w-4 h-4 text-amber-500 animate-pulse" />
-            <span>Select a download location to continue</span>
+            <LockKeyhole className="w-4 h-4 shrink-0 text-amber-500 animate-pulse" />
+            <span className="min-w-0">Select a download location to continue</span>
           </Button>
         ) : (
           <Button
             type="button"
             onClick={download}
             disabled={downloading}
-            className="w-full h-11 font-bold rounded-xl flex items-center justify-center gap-2"
+            className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl flex items-center justify-center gap-2"
           >
             {downloading ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Downloading highest quality…
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                <span className="min-w-0 truncate">Downloading highest quality…</span>
               </>
             ) : (
               <>
-                <Download className="w-4 h-4" />
-                Save {isImage ? "Original Image" : "Highest Quality MP4"} to {folderName}
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="min-w-0 truncate">
+                  Save {isImage ? "Original Image" : "Highest Quality MP4"} to {folderName}
+                </span>
               </>
             )}
           </Button>
         )}
         {folderName && (
-          <p className="text-[11px] text-muted-foreground flex items-center justify-center gap-1">
-            <FolderCheck className="w-3.5 h-3.5" />
-            Saves to Documents/{folderName}
+          <p className="text-[11px] text-muted-foreground flex items-center justify-center gap-1 min-w-0 px-2">
+            <FolderCheck className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Saves to Documents/{folderName}</span>
           </p>
         )}
       </div>

@@ -1,6 +1,115 @@
 import { Filesystem, Directory } from "@capacitor/filesystem";
+import {
+  clampPercent,
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
 
 let currentDirHandle: FileSystemDirectoryHandle | null = null;
+
+interface NativeStorageSaveBridge {
+  openDeviceFolderPicker?(): void;
+  beginTempSave?(extension: string): string;
+  appendTempSaveChunk?(saveId: string, base64Chunk: string): boolean;
+  abortTempSave?(saveId: string): void;
+  finishTempSave?(
+    saveId: string,
+    filename: string,
+    folderName: string,
+    mimeType: string,
+    requestId: string,
+  ): void;
+}
+
+declare global {
+  interface Window {
+    onNativeStorageSaveResult?: (requestId: string, response: string) => void;
+  }
+}
+
+const pendingStorageSaves = new Map<
+  string,
+  { resolve: () => void; reject: (error: Error) => void }
+>();
+
+function getNativeStorageBridge(): NativeStorageSaveBridge | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as Window & { AndroidStorageBridge?: NativeStorageSaveBridge }).AndroidStorageBridge;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
+async function saveBlobViaAndroidBridge(
+  blob: Blob,
+  filename: string,
+  folderName: string,
+  onSaveProgress?: (fraction: number) => void,
+): Promise<boolean> {
+  const bridge = getNativeStorageBridge();
+  if (
+    !bridge?.beginTempSave ||
+    !bridge?.appendTempSaveChunk ||
+    !bridge?.finishTempSave
+  ) {
+    return false;
+  }
+
+  window.onNativeStorageSaveResult ??= (requestId, response) => {
+    const pending = pendingStorageSaves.get(requestId);
+    if (!pending) return;
+    pendingStorageSaves.delete(requestId);
+    try {
+      const parsed = JSON.parse(response) as { error?: string };
+      if (parsed.error) pending.reject(new Error(parsed.error));
+      else pending.resolve();
+    } catch {
+      pending.reject(new Error("Invalid response from Android storage bridge."));
+    }
+  };
+
+  const ext = filename.split(".").pop() || "bin";
+  const saveId = bridge.beginTempSave(ext);
+  if (!saveId) return false;
+
+  const chunkSize = 256 * 1024;
+  try {
+    const totalSize = Math.max(1, blob.size);
+    for (let offset = 0; offset < blob.size; offset += chunkSize) {
+      const end = Math.min(offset + chunkSize, blob.size);
+      const slice = blob.slice(offset, end);
+      const buffer = await slice.arrayBuffer();
+      const base64Chunk = uint8ArrayToBase64(new Uint8Array(buffer));
+      if (!bridge.appendTempSaveChunk(saveId, base64Chunk)) {
+        throw new Error("Failed while streaming file chunk to device storage.");
+      }
+      onSaveProgress?.(Math.min(0.85, (end / totalSize) * 0.85));
+    }
+
+    const requestId = `save-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    await new Promise<void>((resolve, reject) => {
+      pendingStorageSaves.set(requestId, { resolve, reject });
+      bridge.finishTempSave!(
+        saveId,
+        filename,
+        folderName,
+        blob.type || "",
+        requestId,
+      );
+    });
+    onSaveProgress?.(1);
+    return true;
+  } catch (err) {
+    bridge.abortTempSave?.(saveId);
+    throw err;
+  }
+}
 
 export async function ensureStoragePermissions(): Promise<boolean> {
   try {
@@ -69,13 +178,16 @@ export async function openDeviceStorageFolderPicker(): Promise<string | null> {
   await ensureStoragePermissions();
 
   return new Promise((resolve) => {
-    // Native Android Document Tree Intent bridge
-    if (typeof window !== "undefined" && (window as any).AndroidStorageBridge?.openDeviceFolderPicker) {
-      (window as any).onAndroidFolderPicked = (folderName: string) => {
-        resolve(folderName || "HutaoTik Downloads");
+    const bridge = getNativeStorageBridge();
+    if (bridge?.openDeviceFolderPicker) {
+      (window as Window & { onAndroidFolderPicked?: (name: string) => void }).onAndroidFolderPicked = (
+        folderName: string,
+      ) => {
+        const trimmed = folderName?.trim() ?? "";
+        resolve(trimmed ? trimmed : null);
       };
       try {
-        (window as any).AndroidStorageBridge.openDeviceFolderPicker();
+        bridge.openDeviceFolderPicker();
         return;
       } catch {
         /* fallback */
@@ -83,7 +195,7 @@ export async function openDeviceStorageFolderPicker(): Promise<string | null> {
     }
 
     if ("showDirectoryPicker" in window) {
-      (window as any)
+      (window as unknown as { showDirectoryPicker: (opts: { mode: string }) => Promise<FileSystemDirectoryHandle> })
         .showDirectoryPicker({ mode: "readwrite" })
         .then((handle: FileSystemDirectoryHandle) => {
           if (handle) {
@@ -97,12 +209,30 @@ export async function openDeviceStorageFolderPicker(): Promise<string | null> {
       return;
     }
 
-    // Android device storage folder selector
     const input = document.createElement("input");
     input.type = "file";
     input.setAttribute("webkitdirectory", "");
     input.setAttribute("directory", "");
     input.style.display = "none";
+
+    let settled = false;
+    const cleanup = (result: string | null) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("focus", handleWindowFocus);
+      if (document.body.contains(input)) {
+        document.body.removeChild(input);
+      }
+      resolve(result);
+    };
+
+    const handleWindowFocus = () => {
+      setTimeout(() => {
+        if (!settled && (!input.files || input.files.length === 0)) {
+          cleanup(null);
+        }
+      }, 400);
+    };
 
     input.onchange = (e: Event) => {
       const target = e.target as HTMLInputElement;
@@ -110,14 +240,13 @@ export async function openDeviceStorageFolderPicker(): Promise<string | null> {
         const firstFile = target.files[0];
         const relPath = firstFile.webkitRelativePath || firstFile.name;
         const pickedName = relPath.split("/")[0] || "HutaoTik Downloads";
-        resolve(pickedName);
+        cleanup(pickedName);
       } else {
-        resolve(null);
-      }
-      if (document.body.contains(input)) {
-        document.body.removeChild(input);
+        cleanup(null);
       }
     };
+    input.addEventListener("cancel", () => cleanup(null));
+    window.addEventListener("focus", handleWindowFocus);
 
     document.body.appendChild(input);
     input.click();
@@ -132,53 +261,90 @@ export async function promptSelectDirectory(): Promise<{ name: string; handle?: 
   return null;
 }
 
-export async function saveBlobToDevice(blob: Blob, filename: string, folderName: string): Promise<void> {
+export async function saveBlobToDevice(
+  blob: Blob,
+  filename: string,
+  folderName: string,
+  onProgress?: (progress: DownloadProgressState) => void,
+  progressRange?: { startPercent?: number; endPercent?: number },
+): Promise<void> {
   await ensureStoragePermissions();
   const cleanFolder = folderName.trim() || "HutaoTik Downloads";
+  const startPercent = progressRange?.startPercent ?? 88;
+  const endPercent = progressRange?.endPercent ?? 100;
+  const span = Math.max(1, endPercent - startPercent);
+  const emitSaveProgress = (fraction: number) => {
+    onProgress?.({
+      percent: clampPercent(startPercent + Math.max(0, Math.min(1, fraction)) * span),
+      loadedBytes: blob.size,
+      totalBytes: blob.size,
+      status: fraction >= 1 ? "Saved to device folder" : "Saving to device folder…",
+    });
+  };
+  emitSaveProgress(0);
 
+  // 1. Native Android SAF / MediaStore chunked writer (respects custom folder picker & avoids Base64 OOM)
+  try {
+    if (await saveBlobViaAndroidBridge(blob, filename, cleanFolder, emitSaveProgress)) {
+      return;
+    }
+  } catch (err) {
+    console.warn("Native Android storage save failed; trying fallback.", err);
+  }
+
+  // 2. Desktop File System Access API
   if (currentDirHandle) {
     try {
       const fileHandle = await currentDirHandle.getFileHandle(filename, { create: true });
-      const writable = await (fileHandle as any).createWritable();
+      const writable = await (fileHandle as unknown as {
+        createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }>;
+      }).createWritable();
       await writable.write(blob);
       await writable.close();
+      emitSaveProgress(1);
       return;
     } catch {
       /* fallback to Capacitor Filesystem or Blob URL */
     }
   }
 
-  // Convert Blob to Base64 for Capacitor Filesystem writing
-  const base64Data = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const res = reader.result as string;
-      const base64 = res.split(",")[1] || res;
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-
+  // 3. Capacitor Filesystem fallback (only for smaller payloads if native bridge unavailable)
   let savedLocally = false;
-
-  try {
-    await Filesystem.writeFile({
-      path: `${cleanFolder}/${filename}`,
-      data: base64Data,
-      directory: Directory.Documents,
-      recursive: true,
-    });
-    savedLocally = true;
-  } catch {
+  if (blob.size <= 35 * 1024 * 1024) {
     try {
-      await Filesystem.writeFile({
-        path: `${cleanFolder}/${filename}`,
-        data: base64Data,
-        directory: Directory.ExternalStorage,
-        recursive: true,
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const res = reader.result as string;
+          const base64 = res.split(",")[1] || res;
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
       });
-      savedLocally = true;
+      emitSaveProgress(0.5);
+
+      try {
+        await Filesystem.writeFile({
+          path: `${cleanFolder}/${filename}`,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+        savedLocally = true;
+      } catch {
+        try {
+          await Filesystem.writeFile({
+            path: `${cleanFolder}/${filename}`,
+            data: base64Data,
+            directory: Directory.ExternalStorage,
+            recursive: true,
+          });
+          savedLocally = true;
+        } catch {
+          /* fallback to browser blob link */
+        }
+      }
     } catch {
       /* fallback to browser blob link */
     }
@@ -194,27 +360,42 @@ export async function saveBlobToDevice(blob: Blob, filename: string, folderName:
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
+  emitSaveProgress(1);
 }
 
-export async function saveUrlToDevice(url: string, filename: string, folderName: string): Promise<void> {
+export async function saveUrlToDevice(
+  url: string,
+  filename: string,
+  folderName: string,
+  onProgress?: (progress: DownloadProgressState) => void,
+): Promise<void> {
   await ensureStoragePermissions();
   const cleanFolder = folderName.trim() || "HutaoTik Downloads";
-  const path = `${cleanFolder}/${filename}`;
 
-  try {
-    await Filesystem.downloadFile({
-      url,
-      path,
-      directory: Directory.Documents,
-      recursive: true,
-    });
-    return;
-  } catch {
-    /* fallback to fetch blob */
+  const bridge = getNativeStorageBridge();
+  if (!bridge?.beginTempSave && !onProgress) {
+    try {
+      await Filesystem.downloadFile({
+        url,
+        path: `${cleanFolder}/${filename}`,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+      return;
+    } catch {
+      /* fallback to fetch blob */
+    }
   }
 
   const res = await fetch(url, { referrerPolicy: "no-referrer" });
   if (!res.ok) throw new Error("Server returned HTTP " + res.status);
-  const blob = await res.blob();
-  await saveBlobToDevice(blob, filename, folderName);
+  const blob = await fetchBlobWithProgress(res, onProgress, {
+    startPercent: 0,
+    endPercent: 88,
+    status: "Downloading media…",
+  });
+  await saveBlobToDevice(blob, filename, cleanFolder, onProgress, {
+    startPercent: 88,
+    endPercent: 100,
+  });
 }

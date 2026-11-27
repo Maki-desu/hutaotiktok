@@ -1,3 +1,8 @@
+import {
+  registerNativeDownloadProgressListener,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+
 export interface NativeFacebookInfo {
   title: string;
   thumbnail: string | null;
@@ -31,7 +36,8 @@ const pendingRequests = new Map<
 >();
 
 function requestNativeFacebook(
-  startRequest: (bridge: NativeFacebookBridge, requestId: string) => void
+  startRequest: (bridge: NativeFacebookBridge, requestId: string) => void,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<NativeFacebookResponse> {
   const bridge = window.AndroidStorageBridge;
   if (!bridge) return Promise.reject(new Error("On-device Facebook downloads are unavailable."));
@@ -51,7 +57,8 @@ function requestNativeFacebook(
   };
 
   const requestId = `facebook-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return new Promise((resolve, reject) => {
+  const unregisterProgress = registerNativeDownloadProgressListener(requestId, onProgress);
+  return new Promise<NativeFacebookResponse>((resolve, reject) => {
     pendingRequests.set(requestId, { resolve, reject });
     try {
       startRequest(bridge, requestId);
@@ -59,6 +66,8 @@ function requestNativeFacebook(
       pendingRequests.delete(requestId);
       reject(error instanceof Error ? error : new Error("Could not start Facebook download."));
     }
+  }).finally(() => {
+    unregisterProgress();
   });
 }
 
@@ -81,9 +90,11 @@ export function downloadFacebookOnDevice(
   url: string,
   quality: string,
   filename: string,
-  folderName: string
+  folderName: string,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<void> {
-  return requestNativeFacebook((bridge, requestId) =>
-    bridge.downloadFacebook(url, quality, filename, folderName, requestId)
+  return requestNativeFacebook(
+    (bridge, requestId) => bridge.downloadFacebook(url, quality, filename, folderName, requestId),
+    onProgress,
   ).then(() => undefined);
 }

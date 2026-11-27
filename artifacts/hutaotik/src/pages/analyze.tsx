@@ -1,5 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAnalyzeTiktokVideo, useGetPublicSettings } from "@workspace/api-client-react";
+import { extractFirstHttpUrl } from "@/lib/pinterest-url";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -166,6 +167,12 @@ export default function Analyze() {
   const { data: publicSettings } = useGetPublicSettings();
   const analyzeMutation = useAnalyzeTiktokVideo();
 
+  useEffect(() => {
+    return () => {
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
+    };
+  }, []);
+
   if (publicSettings?.analyzeEnabled === false) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center px-4">
@@ -181,8 +188,11 @@ export default function Analyze() {
   }
 
   const handleAnalyze = (inputUrl: string) => {
-    const trimmed = inputUrl.trim();
-    if (!trimmed || !trimmed.includes("tiktok.com")) return;
+    const trimmed = extractFirstHttpUrl(inputUrl);
+    if (!trimmed || !trimmed.toLowerCase().includes("tiktok.com")) return;
+    setUrl(trimmed);
+
+    if (analyzeMutation.isPending) return;
 
     const now = Date.now();
     const diff = now - lastFetchTime.current;
@@ -208,7 +218,8 @@ export default function Analyze() {
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      setUrl(text);
+      const cleaned = extractFirstHttpUrl(text);
+      setUrl(cleaned || text.trim());
       handleAnalyze(text);
     } catch { /* unavailable */ }
   };
@@ -217,6 +228,7 @@ export default function Analyze() {
   const isPending = analyzeMutation.isPending;
   const isError = analyzeMutation.isError;
   const errorMsg =
+    (analyzeMutation.error instanceof Error && analyzeMutation.error.message) ||
     (analyzeMutation.error as { error?: { error?: string } } | null)?.error?.error ||
     "Failed to fetch video info. Check the URL.";
 
@@ -246,7 +258,12 @@ export default function Analyze() {
               onKeyDown={(e) => e.key === "Enter" && handleAnalyze(url)}
               onPaste={(e) => {
                 const pasted = e.clipboardData.getData("text");
-                if (pasted) setTimeout(() => handleAnalyze(pasted), 0);
+                if (pasted) {
+                  e.preventDefault();
+                  const cleaned = extractFirstHttpUrl(pasted);
+                  setUrl(cleaned || pasted.trim());
+                  setTimeout(() => handleAnalyze(pasted), 0);
+                }
               }}
               placeholder="https://www.tiktok.com/@user/video/…"
               className="pl-9 h-11 bg-background/60 border-border/60 rounded-xl text-sm focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary transition-all"
@@ -376,7 +393,7 @@ export default function Analyze() {
                     <BadgeCheck className="w-4 h-4 text-primary shrink-0" />
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground">@{data.author.username}</p>
+                <p className="text-xs text-muted-foreground truncate">@{data.author.username.replace(/^@/, "")}</p>
                 {data.author.bio && (
                   <p className="text-xs text-foreground/70 mt-1 line-clamp-2 leading-relaxed">{data.author.bio}</p>
                 )}

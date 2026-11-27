@@ -1,5 +1,4 @@
 import { ReactNode, useState, useCallback, useEffect, type MouseEvent } from "react";
-import { useLocation } from "wouter";
 import {
   useGetPublicSettings,
   getGetPublicSettingsQueryKey,
@@ -15,6 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { apiUrl } from "@/lib/api-url";
 import { loadBrandingImages, onBrandingChanged } from "@/lib/app-branding";
 import logoFallback from "@assets/b52ef5e5af44af36517e4b1568bff58a_1780063742037.jpg";
 import bannerFallback from "@assets/4fb7478f6043ee9849d2fbb866bc6489_1780063761840.jpg";
@@ -82,7 +82,7 @@ function GhostOrbit({ logoSrc }: { logoSrc: string }) {
       <img
         src={logoSrc}
         alt="logo"
-        className="relative z-10 w-9 h-9 rounded-lg object-cover border border-white/20 shadow transition-transform duration-200 group-hover:scale-110"
+        className="relative z-10 w-9 h-9 rounded-lg object-cover border border-white/20 shadow transition-transform duration-300 ease-[var(--spring-bounce)] group-hover:scale-110 group-active:scale-95"
       />
     </div>
   );
@@ -90,35 +90,46 @@ function GhostOrbit({ logoSrc }: { logoSrc: string }) {
 
 function CoffeeSupportDialogContent({ onCopy }: { onCopy: () => Promise<void> }) {
   return (
-    <DialogContent className="max-w-sm rounded-2xl border-border bg-card">
+    <DialogContent className="max-w-sm rounded-2xl border-border bg-card p-5 sm:p-6">
       <DialogHeader className="items-center text-center">
-        <span className="mb-1 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary">
+        <span className="mb-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
           <Coffee className="h-6 w-6" />
         </span>
-        <DialogTitle>Thank you for your support!</DialogTitle>
-        <DialogDescription>
+        <DialogTitle className="break-words">Thank you for your support!</DialogTitle>
+        <DialogDescription className="break-words">
           Send a little support through GCash. Open GCash and choose Send Money.
         </DialogDescription>
       </DialogHeader>
-      <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-center">
+      <div className="min-w-0 rounded-xl border border-primary/25 bg-primary/5 px-3 py-3 text-center sm:px-4">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
           GCash number
         </p>
-        <p className="mt-1 select-all font-mono text-lg font-bold tracking-wide text-primary">
+        <p className="mt-1 select-all break-words font-mono text-base font-bold tracking-wide text-primary sm:text-lg">
           +63 951 842 0452
         </p>
       </div>
-      <Button type="button" variant="outline" onClick={onCopy} className="w-full">
-        <Copy className="h-4 w-4" />
-        Copy number
+      <Button type="button" variant="outline" onClick={onCopy} className="w-full max-w-full overflow-hidden">
+        <Copy className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 truncate">Copy number</span>
       </Button>
     </DialogContent>
   );
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const [location] = useLocation();
+  const [location, setLocation] = useState(
+    () => (window.location.hash.replace("#", "") || "/").split("?")[0],
+  );
   const { toast } = useToast();
+
+  useEffect(() => {
+    const syncHash = () => {
+      setLocation((window.location.hash.replace("#", "") || "/").split("?")[0]);
+    };
+    window.addEventListener("hashchange", syncHash);
+    syncHash();
+    return () => window.removeEventListener("hashchange", syncHash);
+  }, []);
 
   const { data: publicSettings } = useGetPublicSettings({
     query: { queryKey: getGetPublicSettingsQueryKey(), refetchInterval: 30_000 },
@@ -153,7 +164,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const profileUrl = normalizeUrl(publicSettings?.tiktokProfileUrl);
 
   const profileRedirectUrl = profileUrl
-    ? `/api/redirect?url=${encodeURIComponent(profileUrl)}`
+    ? apiUrl(`/api/redirect?url=${encodeURIComponent(profileUrl)}`)
     : undefined;
 
   const handleProfileClick = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -169,14 +180,40 @@ export function Layout({ children }: { children: ReactNode }) {
   };
 
   const handleCopyGcashNumber = async () => {
+    const numberToCopy = "+639518420452";
+    let copied = false;
     try {
-      await navigator.clipboard.writeText("+639518420452");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(numberToCopy);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = numberToCopy;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        textarea.style.pointerEvents = "none";
+        document.body.appendChild(textarea);
+        textarea.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+
+    if (copied) {
       toast({
         title: "GCash number copied",
         description: "Open GCash and send your support to +63 951 842 0452.",
       });
-    } catch (error) {
-      console.error("Could not copy the GCash number.", error);
+    } else {
       toast({
         title: "Could not copy the number",
         description: "Please copy +63 951 842 0452 manually.",
@@ -214,15 +251,16 @@ export function Layout({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => navigateTo("/taotools")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/taotools"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white"
+                  : "text-white border-white/20"
               }`}
               data-testid="nav-taotools"
               title="Tao Tools Suite"
+              aria-current={location === "/taotools" ? "page" : undefined}
             >
-              <Wand2 className="w-3.5 h-3.5 text-primary animate-pulse" />
+              <Wand2 className="w-3.5 h-3.5 text-primary shrink-0" />
               <span>Taotools</span>
             </button>
 
@@ -230,15 +268,16 @@ export function Layout({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => navigateTo("/updates")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/updates"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white"
+                  : "text-white border-white/20"
               }`}
               data-testid="nav-updates"
               title="App Version Updates & Changelog"
+              aria-current={location === "/updates" ? "page" : undefined}
             >
-              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
               <span>Updates</span>
             </button>
 
@@ -246,23 +285,23 @@ export function Layout({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => navigateTo("/settings")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer bg-white/10 hover:bg-white/20 border border-white/20 shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/settings"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white"
+                  : "text-white border-white/20"
               }`}
               data-testid="nav-settings"
               title="App Settings"
               aria-current={location === "/settings" ? "page" : undefined}
             >
-              <SettingsIcon className="w-3.5 h-3.5 text-primary" />
+              <SettingsIcon className="w-3.5 h-3.5 text-primary shrink-0" />
               <span>Settings</span>
             </button>
           </nav>
         </header>
 
         {/* Hero text */}
-        <div className="relative z-10 px-4 pt-4 pb-8" style={{ animation: "slide-up-fade-in 0.5s ease both" }}>
+        <div className="relative z-10 px-4 pt-4 pb-8 animate-bounce-pop" style={{ animationDelay: "80ms" }}>
           <h1 className="text-3xl font-syne font-extrabold text-white leading-tight">
             Download <span className="text-primary">anything.</span>
           </h1>
@@ -308,11 +347,11 @@ export function Layout({ children }: { children: ReactNode }) {
         <DialogTrigger asChild>
           <button
             type="button"
-            className="fixed left-4 z-50 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md transition hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95"
-            style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+            className="animate-bounce-pop fixed left-4 z-50 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={{ bottom: "max(1rem, env(safe-area-inset-bottom))", animationDelay: "220ms" }}
           >
-            <Coffee className="h-4 w-4 text-primary" />
-            <span>Buy me a coffee</span>
+            <Coffee className="h-4 w-4 shrink-0 text-primary animate-float-gentle" />
+            <span className="truncate">Buy me a coffee</span>
           </button>
         </DialogTrigger>
         <CoffeeSupportDialogContent onCopy={handleCopyGcashNumber} />

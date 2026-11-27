@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import chibi1 from "@/assets/chibi1.png";
 import chibi2 from "@/assets/chibi2.png";
 import chibi3 from "@/assets/chibi3.png";
+import { loadBounceAnimationEnabled, onBounceAnimationChanged } from "@/lib/bounce-animation";
 
 interface ChibiItem {
   id: number;
@@ -16,6 +17,7 @@ interface ChibiItem {
 const CHIBI_IMAGES = [chibi1, chibi2, chibi3];
 
 export function ChibiWanderers() {
+  const [bounceEnabled, setBounceEnabled] = useState(() => loadBounceAnimationEnabled());
   const [chibis, setChibis] = useState<ChibiItem[]>(() => {
     return CHIBI_IMAGES.map((src, i) => ({
       id: i,
@@ -48,7 +50,11 @@ export function ChibiWanderers() {
       );
     }, 4000);
 
-    return () => clearInterval(interval);
+    const unsubscribeBounce = onBounceAnimationChanged(setBounceEnabled);
+    return () => {
+      clearInterval(interval);
+      unsubscribeBounce();
+    };
   }, []);
 
   const handleChibiTap = (id: number) => {
@@ -79,7 +85,11 @@ export function ChibiWanderers() {
         <div
           key={c.id}
           onClick={() => handleChibiTap(c.id)}
-          className="absolute pointer-events-auto cursor-pointer transition-all duration-1000 ease-in-out hover:scale-110 active:scale-90"
+          className={`absolute pointer-events-auto cursor-pointer transition-all duration-700 ${
+            bounceEnabled
+              ? "ease-[cubic-bezier(0.34,1.65,0.64,1)] hover:scale-115 active:scale-85"
+              : "ease-out"
+          }`}
           style={{
             left: `${c.x}%`,
             top: `${c.y}%`,
@@ -90,7 +100,7 @@ export function ChibiWanderers() {
           <img
             src={c.src}
             alt={`Hu Tao Chibi ${c.id + 1}`}
-            className="w-16 h-16 sm:w-20 sm:h-20 object-contain animate-bounce"
+            className={`w-16 h-16 sm:w-20 sm:h-20 object-contain ${bounceEnabled ? "animate-bounce" : ""}`}
             style={{
               animationDuration: `${2.5 + c.id * 0.6}s`,
             }}

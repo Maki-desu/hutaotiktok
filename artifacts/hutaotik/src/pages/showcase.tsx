@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useGetPublicSettings, getGetPublicSettingsQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,10 +10,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Pin, ExternalLink, Loader2, Clapperboard, Send, X, LockKeyhole } from "lucide-react";
+import { Pin, ExternalLink, Loader2, Clapperboard, Send, LockKeyhole } from "lucide-react";
 import { SiTiktok } from "react-icons/si";
 import { formatDistanceToNow } from "date-fns";
+import { apiUrl } from "@/lib/api-url";
+import { extractFirstHttpUrl } from "@/lib/pinterest-url";
 import { useToast } from "@/hooks/use-toast";
+
+function safeRelativeDate(raw: string): string {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "recently";
+  return formatDistanceToNow(parsed, { addSuffix: true });
+}
 
 interface ShowcaseVideo {
   id: number;
@@ -32,27 +40,27 @@ interface ShowcaseVideo {
 
 function useShowcase() {
   const [videos, setVideos] = useState<ShowcaseVideo[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetched, setFetched] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const load = async () => {
-    if (fetched) return;
-    setLoading(true);
-    try {
-      const res = await fetch("/api/showcase");
-      if (res.ok) setVideos(await res.json());
-    } finally {
-      setLoading(false);
-      setFetched(true);
-    }
-  };
-
-  if (!fetched && !loading) {
-    load();
-  }
+  useEffect(() => {
+    let active = true;
+    fetch(apiUrl("/api/showcase"))
+      .then(async (res) => {
+        if (active && res.ok) {
+          setVideos(await res.json());
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const submit = async (tiktokUrl: string): Promise<ShowcaseVideo | null> => {
-    const res = await fetch("/api/showcase", {
+    const res = await fetch(apiUrl("/api/showcase"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tiktokUrl }),
@@ -65,7 +73,7 @@ function useShowcase() {
   };
 
   const refresh = async () => {
-    const res = await fetch("/api/showcase");
+    const res = await fetch(apiUrl("/api/showcase"));
     if (res.ok) setVideos(await res.json());
   };
 
@@ -86,9 +94,9 @@ export default function Showcase() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = url.trim();
+    const trimmed = extractFirstHttpUrl(url) || url.trim();
     if (!trimmed) return;
-    if (!trimmed.includes("tiktok.com")) {
+    if (!trimmed.toLowerCase().includes("tiktok.com")) {
       toast({ title: "Only TikTok links are allowed", variant: "destructive" });
       return;
     }
@@ -251,23 +259,19 @@ function VideoCard({ video, onPlay, pinned }: { video: ShowcaseVideo; onPlay: ()
 }
 
 function VideoModal({ video, onClose }: { video: ShowcaseVideo; onClose: () => void }) {
+  const cleanUsername = video.authorUsername.replace(/^@/, "");
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-sm p-0 bg-background border-border overflow-hidden">
-        <DialogHeader className="px-4 pt-4 pb-2">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              {video.authorAvatar && (
-                <img src={video.authorAvatar} alt="" className="w-8 h-8 rounded-full object-cover shrink-0 border border-border" />
-              )}
-              <div className="min-w-0">
-                <DialogTitle className="text-sm font-bold truncate">{video.authorDisplayName || `@${video.authorUsername}`}</DialogTitle>
-                <p className="text-xs text-muted-foreground">@{video.authorUsername}</p>
-              </div>
+        <DialogHeader className="px-4 pt-4 pb-2 pr-10 text-left">
+          <div className="flex items-center gap-2 min-w-0">
+            {video.authorAvatar && (
+              <img src={video.authorAvatar} alt="" className="w-8 h-8 rounded-full object-cover shrink-0 border border-border" />
+            )}
+            <div className="min-w-0">
+              <DialogTitle className="text-sm font-bold truncate">{video.authorDisplayName || `@${cleanUsername}`}</DialogTitle>
+              <p className="text-xs text-muted-foreground truncate">@{cleanUsername}</p>
             </div>
-            <button onClick={onClose} className="shrink-0 p-1 rounded-full hover:bg-secondary transition-colors">
-              <X className="w-4 h-4" />
-            </button>
           </div>
         </DialogHeader>
 
@@ -300,7 +304,7 @@ function VideoModal({ video, onClose }: { video: ShowcaseVideo; onClose: () => v
             </a>
           </div>
           <p className="text-[10px] text-muted-foreground text-center">
-            Shared {formatDistanceToNow(new Date(video.createdAt), { addSuffix: true })}
+            Shared {safeRelativeDate(video.createdAt)}
           </p>
         </div>
       </DialogContent>

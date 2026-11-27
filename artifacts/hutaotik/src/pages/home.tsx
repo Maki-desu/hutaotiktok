@@ -76,6 +76,9 @@ export default function Home() {
         setFolderName(name);
       });
     }
+    return () => {
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
+    };
   }, []);
 
   // Downloading Animation & Completion Visual State
@@ -145,6 +148,7 @@ export default function Home() {
   const handleFetch = (inputUrl: string) => {
     const trimmed = extractFirstHttpUrl(inputUrl);
     if (!trimmed) return;
+    setUrl(trimmed);
 
     if (isTwitterUrl(trimmed)) {
       fetchMutation.reset();
@@ -189,9 +193,7 @@ export default function Home() {
       return;
     }
 
-    fetchMutation.reset();
-    setPlatform("tiktok");
-    setSubmittedUrl(trimmed);
+    if (fetchMutation.isPending) return;
 
     const now = Date.now();
     const diff = now - lastFetchTime.current;
@@ -212,6 +214,9 @@ export default function Home() {
       return;
     }
 
+    fetchMutation.reset();
+    setPlatform("tiktok");
+    setSubmittedUrl(trimmed);
     lastFetchTime.current = now;
     setError(null);
     setDownloadSuccessInfo(null);
@@ -225,6 +230,9 @@ export default function Home() {
       }
     );
   };
+
+  const handleFetchRef = useRef(handleFetch);
+  handleFetchRef.current = handleFetch;
 
   // Auto-handle shared URLs from TikTok or Facebook Share Intents
   useEffect(() => {
@@ -253,7 +261,7 @@ export default function Home() {
       if (previous?.url === normalizedUrl && Date.now() - previous.at < 5000) return true;
       lastSharedUrl.current = { url: normalizedUrl, at: Date.now() };
       setUrl(normalizedUrl);
-      handleFetch(normalizedUrl);
+      handleFetchRef.current(normalizedUrl);
       return true;
     };
 
@@ -283,18 +291,30 @@ export default function Home() {
     const interval = setInterval(checkSharedPending, 1000);
     window.addEventListener("focus", checkSharedPending);
 
+    const listenerHandles: Array<{ remove?: () => Promise<void> }> = [];
     if (typeof window !== "undefined" && (window as any).Capacitor?.Plugins?.App) {
-      (window as any).Capacitor.Plugins.App.addListener("appUrlOpen", (data: { url: string }) => {
-        if (data?.url) processRawSharedText(data.url);
-      });
-      (window as any).Capacitor.Plugins.App.addListener("appStateChange", (state: { isActive: boolean }) => {
-        if (state?.isActive) checkSharedPending();
-      });
+      Promise.resolve(
+        (window as any).Capacitor.Plugins.App.addListener("appUrlOpen", (data: { url: string }) => {
+          if (data?.url) processRawSharedText(data.url);
+        }),
+      ).then((handle) => {
+        if (handle) listenerHandles.push(handle);
+      }).catch(() => {});
+      Promise.resolve(
+        (window as any).Capacitor.Plugins.App.addListener("appStateChange", (state: { isActive: boolean }) => {
+          if (state?.isActive) checkSharedPending();
+        }),
+      ).then((handle) => {
+        if (handle) listenerHandles.push(handle);
+      }).catch(() => {});
     }
 
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", checkSharedPending);
+      listenerHandles.forEach((handle) => {
+        void handle.remove?.();
+      });
     };
   }, []);
 
@@ -456,19 +476,53 @@ export default function Home() {
 
       const totalPhotos = video.photos.length;
       let completedPhotos = 0;
+      let savedPhotos = 0;
 
       await Promise.all(
         video.photos.map(async (photoUrl, i) => {
+          const filenameInZip = `photo-${String(i + 1).padStart(2, "0")}.jpg`;
           try {
-            const resp = await fetch(photoUrl);
-            if (resp.ok) {
-              folder.file(`photo-${String(i + 1).padStart(2, "0")}.jpg`, await resp.blob());
+            let blob: Blob | null = null;
+            const proxyUrl = apiUrl(
+              `/api/proxy-download?${new URLSearchParams({ url: photoUrl, filename: filenameInZip }).toString()}`,
+            );
+            try {
+              const proxyResp = await fetch(proxyUrl, { referrerPolicy: "no-referrer" });
+              if (proxyResp.ok) {
+                const candidate = await proxyResp.blob();
+                if (candidate.size > 0 && !candidate.type.includes("text/html") && !candidate.type.includes("application/json")) {
+                  blob = candidate;
+                }
+              }
+            } catch {
+              // Fall back to direct no-referrer fetch below
             }
-          } catch { /* skip */ }
+
+            if (!blob) {
+              const directResp = await fetch(photoUrl, { referrerPolicy: "no-referrer" });
+              if (directResp.ok) {
+                const candidate = await directResp.blob();
+                if (candidate.size > 0 && !candidate.type.includes("text/html")) {
+                  blob = candidate;
+                }
+              }
+            }
+
+            if (blob) {
+              folder.file(filenameInZip, blob);
+              savedPhotos++;
+            }
+          } catch {
+            /* skip failed photo */
+          }
           completedPhotos++;
           setDownloadProgress(Math.round((completedPhotos / totalPhotos) * 100));
         }),
       );
+
+      if (savedPhotos === 0) {
+        throw new Error("Could not download any photos from this TikTok post.");
+      }
 
       const blob = await zip.generateAsync({ type: "blob" });
       const safeTitle = (video.title || "photos").replace(/[^a-z0-9\s]/gi, "").trim() || "photos";
@@ -491,11 +545,11 @@ export default function Home() {
   };
 
   return (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-400">
+    <div className="space-y-4">
 
       {/* ── PASTE LINK / SECTION SELECTOR card ─────────────────────────── */}
-      <div className="bg-card rounded-2xl border border-border p-4 space-y-3 shadow-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground px-0.5 flex items-center gap-1.5">
+      <div className="animate-card-bounce-in bg-card rounded-2xl border border-border p-4 space-y-3 shadow-sm">
+        <p key={platform} className="animate-pill-pop text-[11px] font-semibold uppercase tracking-widest text-muted-foreground px-0.5 flex items-center gap-1.5">
           {platform === "facebook" ? (
             <SiFacebook className="w-3.5 h-3.5 text-blue-500" />
           ) : platform === "youtube" ? (
@@ -600,7 +654,12 @@ export default function Home() {
               onKeyDown={(e) => e.key === "Enter" && handleFetch(url)}
               onPaste={(e) => {
                 const pasted = e.clipboardData.getData("text");
-                if (pasted) setTimeout(() => handleFetch(pasted), 0);
+                if (pasted) {
+                  e.preventDefault();
+                  const cleaned = extractFirstHttpUrl(pasted);
+                  setUrl(cleaned || pasted.trim());
+                  setTimeout(() => handleFetch(pasted), 0);
+                }
               }}
               placeholder={
                 platform === "facebook"
@@ -640,7 +699,7 @@ export default function Home() {
         </div>
 
         {error && (
-          <div className="flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5 mt-1">
+          <div className="animate-error-shake flex items-start gap-2.5 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2.5 mt-1">
             <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
             <p className="text-sm text-destructive leading-snug">{error}</p>
           </div>
@@ -648,22 +707,22 @@ export default function Home() {
       </div>
 
       {/* ── DOWNLOAD LOCATION CARD ─────────────────── */}
-      <div className="bg-card rounded-2xl border border-border p-4 shadow-sm space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+      <div className="animate-card-bounce-in bg-card rounded-2xl border border-border p-4 shadow-sm space-y-3" style={{ animationDelay: "75ms" }}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <div className="w-9 h-9 rounded-xl bg-primary/15 flex items-center justify-center shrink-0 border border-primary/30">
               <FolderCheck className="w-5 h-5 text-primary" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-semibold">
                 Download Location
               </p>
-              <p className="text-sm font-bold text-foreground flex items-center gap-1.5 mt-0.5">
-                <span>Documents/{folderName || "HutaoTik Downloads"}</span>
+              <p className="text-sm font-bold text-foreground flex items-center gap-1.5 mt-0.5 min-w-0">
+                <span className="truncate">Documents/{folderName || "HutaoTik Downloads"}</span>
               </p>
             </div>
           </div>
-          <Badge variant="outline" className="bg-primary/10 border-primary/30 text-primary text-[10px] font-bold px-2 py-0.5">
+          <Badge variant="outline" className="shrink-0 bg-primary/10 border-primary/30 text-primary text-[10px] font-bold px-2 py-0.5">
             Active
           </Badge>
         </div>
@@ -676,10 +735,10 @@ export default function Home() {
           type="button"
           onClick={handleOpenFolderPicker}
           variant="outline"
-          className="w-full h-10 rounded-xl border-primary/40 text-primary hover:bg-primary/10 hover:border-primary font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer shadow-sm"
+          className="w-full max-w-full overflow-hidden h-10 px-3 rounded-xl border-primary/40 text-primary hover:bg-primary/10 hover:border-primary font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow-sm"
         >
-          <FolderPlus className="w-4 h-4" />
-          <span>Change Folder Download Location</span>
+          <FolderPlus className="w-4 h-4 shrink-0" />
+          <span className="min-w-0 truncate">Change Folder Download Location</span>
         </Button>
       </div>
 
@@ -692,7 +751,7 @@ export default function Home() {
             onOpenFolderPicker={handleOpenFolderPicker}
           />
         ) : (
-          <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+          <div key="fb-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "120ms" }}>
             <div className="w-9 h-9 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0">
               <SiFacebook className="w-4 h-4 text-blue-500" />
             </div>
@@ -712,7 +771,7 @@ export default function Home() {
             onOpenFolderPicker={handleOpenFolderPicker}
           />
         ) : (
-          <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+          <div key="yt-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "120ms" }}>
             <div className="w-9 h-9 rounded-xl bg-red-500/10 flex items-center justify-center shrink-0">
               <SiYoutube className="w-4 h-4 text-red-500" />
             </div>
@@ -732,7 +791,7 @@ export default function Home() {
             onOpenFolderPicker={handleOpenFolderPicker}
           />
         ) : (
-          <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+          <div key="tw-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "120ms" }}>
             <div className="w-9 h-9 rounded-xl bg-foreground/10 flex items-center justify-center shrink-0">
               <SiX className="w-4 h-4 text-foreground" />
             </div>
@@ -754,7 +813,7 @@ export default function Home() {
             onOpenFolderPicker={handleOpenFolderPicker}
           />
         ) : (
-          <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+          <div key="pin-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "120ms" }}>
             <div className="w-9 h-9 rounded-xl bg-red-600/10 flex items-center justify-center shrink-0">
               <SiPinterest className="w-4 h-4 text-red-600" />
             </div>
@@ -776,7 +835,7 @@ export default function Home() {
             onOpenFolderPicker={handleOpenFolderPicker}
           />
         ) : (
-          <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+          <div key="ig-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "120ms" }}>
             <div className="w-9 h-9 rounded-xl bg-pink-600/10 flex items-center justify-center shrink-0">
               <SiInstagram className="w-4 h-4 text-pink-600" />
             </div>
@@ -792,7 +851,7 @@ export default function Home() {
         <>
           {/* How-to hint */}
           {!video && !isLoading && (
-            <div className="bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm">
+            <div key="tt-hint" className="animate-bounce-pop bg-card rounded-2xl border border-border p-4 flex items-start gap-3 shadow-sm" style={{ animationDelay: "140ms" }}>
               <div className="w-9 h-9 rounded-xl bg-primary/15 flex items-center justify-center shrink-0">
                 <Copy className="w-4 h-4 text-primary" />
               </div>
@@ -827,7 +886,7 @@ export default function Home() {
 
           {/* Video preview card */}
           {video && !isLoading && (
-            <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm animate-in fade-in zoom-in-95 duration-300">
+            <div className="animate-card-bounce-in bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
               <div className="flex gap-4 p-4">
                 <div className="relative w-24 shrink-0 rounded-xl overflow-hidden aspect-[9/16] bg-secondary border border-border">
                   {video.thumbnail ? (
@@ -860,7 +919,7 @@ export default function Home() {
                     />
                     <div className="min-w-0">
                       <p className="text-sm font-semibold leading-tight truncate">{video.author}</p>
-                      <p className="text-[11px] text-muted-foreground">@{video.authorUsername}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">@{video.authorUsername.replace(/^@/, "")}</p>
                     </div>
                   </div>
                   <p className="text-xs text-foreground/80 line-clamp-3 leading-relaxed">{video.title}</p>
@@ -945,7 +1004,7 @@ export default function Home() {
 
               {/* ── ANIMATED DOWNLOADING BANNER / PROGRESS VISUAL ───────────────── */}
               {isDownloadingInApp && (
-                <div className="px-4 pb-4 animate-in fade-in duration-300">
+                <div className="px-4 pb-4 animate-bounce-pop">
                   <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
@@ -972,10 +1031,10 @@ export default function Home() {
 
               {/* ── DOWNLOAD COMPLETE SUCCESS NOTIFICATION BANNER ──────────────────── */}
               {downloadSuccessInfo && !isDownloadingInApp && (
-                <div className="px-4 pb-4 animate-in fade-in zoom-in-95 duration-300">
+                <div className="px-4 pb-4 animate-success-pop">
                   <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 shadow-md">
                     <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500 shrink-0 mt-0.5">
-                      <CheckCircle2 className="w-5 h-5 animate-in zoom-in-50 duration-300" />
+                      <CheckCircle2 className="w-5 h-5 animate-pill-pop" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-extrabold text-emerald-400 leading-tight">Download Complete!</p>
@@ -992,17 +1051,17 @@ export default function Home() {
                   type="button"
                   disabled={isDownloadingInApp || !selectedDownloadUrl}
                   onClick={handleDownloadInApp}
-                  className="w-full h-11 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {isDownloadingInApp ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Downloading… {downloadProgress}%</span>
+                      <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                      <span className="min-w-0 truncate">Downloading… {downloadProgress}%</span>
                     </>
                   ) : (
                     <>
-                      <Download className="w-4 h-4" />
-                      <span>Save {quality === "audio" ? "MP3 Audio" : `${quality.toUpperCase()} Video`} to {folderName}</span>
+                      <Download className="w-4 h-4 shrink-0" />
+                      <span className="min-w-0 truncate">Save {quality === "audio" ? "MP3 Audio" : `${quality.toUpperCase()} Video`} to {folderName}</span>
                     </>
                   )}
                 </Button>
