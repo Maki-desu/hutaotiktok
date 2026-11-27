@@ -347,7 +347,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <DialogTrigger asChild>
           <button
             type="button"
-            className="animate-bounce-pop fixed left-4 z-50 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="animate-bounce-pop fixed left-4 z-40 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{ bottom: "max(1rem, env(safe-area-inset-bottom))", animationDelay: "220ms" }}
           >
             <Coffee className="h-4 w-4 shrink-0 text-primary animate-float-gentle" />

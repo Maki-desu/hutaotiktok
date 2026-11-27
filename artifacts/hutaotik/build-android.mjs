@@ -41,6 +41,7 @@ process.env.PORT ??= "22394";
 process.env.BASE_PATH = "./";
 process.env.NODE_ENV = "production";
 process.env.VITE_APP_MODE = "user";
+process.env.VITE_ADMIN_APP_KEY = "";
 process.env.VITE_APP_VERSION_CODE = versionCode;
 process.env.VITE_APP_VERSION_NAME = versionName;
 process.env.VITE_FIREBASE_PUSH_ENABLED = pushEnabled ? "true" : "false";

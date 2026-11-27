@@ -15,6 +15,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { saveBlobToDevice, getStoredFolderName } from "@/lib/download-folder";
+import { type DownloadProgressState } from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { useToast } from "@/hooks/use-toast";
 
 export function BgRemoverSection({
@@ -32,6 +34,8 @@ export function BgRemoverSection({
   const [outputFormat, setOutputFormat] = useState<"png" | "jpg_white" | "jpg_black">("png");
   const [highPrecision, setHighPrecision] = useState(true);
   const [cutoutDataUrl, setCutoutDataUrl] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -182,13 +186,18 @@ export function BgRemoverSection({
       return;
     }
 
+    setIsExporting(true);
+    setExportProgress({ percent: 0, status: "Preparing cutout image…" });
     try {
       const resp = await fetch(cutoutDataUrl);
       const blob = await resp.blob();
       const ext = outputFormat === "png" ? "png" : "jpg";
       const filename = `Tao_Cutout_${Date.now()}.${ext}`;
 
-      await saveBlobToDevice(blob, filename, targetFolder);
+      await saveBlobToDevice(blob, filename, targetFolder, setExportProgress, {
+        startPercent: 15,
+        endPercent: 100,
+      });
 
       setDownloadSuccessInfo({ filename, folder: targetFolder });
       toast({
@@ -201,6 +210,9 @@ export function BgRemoverSection({
         description: "Could not save cutout image.",
         variant: "destructive",
       });
+    } finally {
+      setIsExporting(false);
+      setExportProgress({ percent: 0 });
     }
   };
 
@@ -398,8 +410,16 @@ export function BgRemoverSection({
             </div>
           </div>
 
+          {isExporting && (
+            <DownloadProgressCard
+              title={`Saving cutout to ${folderName || getStoredFolderName() || "HutaoTik Downloads"}…`}
+              progress={exportProgress}
+              className=""
+            />
+          )}
+
           {/* Download Completion visual */}
-          {downloadSuccessInfo && (
+          {downloadSuccessInfo && !isExporting && (
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 animate-in fade-in duration-300">
               <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
@@ -435,11 +455,20 @@ export function BgRemoverSection({
               <Button
                 type="button"
                 onClick={handleDownloadCutout}
-                disabled={!cutoutDataUrl || isProcessing}
-                className="flex-1 h-11 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
+                disabled={!cutoutDataUrl || isProcessing || isExporting}
+                className="flex-1 min-w-0 max-w-full overflow-hidden h-11 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
               >
-                <Download className="w-4 h-4" />
-                <span>Download Cutout Image</span>
+                {isExporting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                    <span className="min-w-0 truncate">Saving… {exportProgress.percent}%</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0 truncate">Download Cutout Image</span>
+                  </>
+                )}
               </Button>
             )}
           </div>

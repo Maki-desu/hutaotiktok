@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, Music, Loader2, AlertCircle, LockKeyhole, FolderCheck, CheckCircle2, ArrowDown, Sparkles } from "lucide-react";
+import { Download, Music, Loader2, AlertCircle, LockKeyhole, FolderCheck, CheckCircle2 } from "lucide-react";
 import { SiFacebook } from "react-icons/si";
 import { apiUrl } from "@/lib/api-url";
 import {
@@ -10,6 +10,11 @@ import {
   isNativeFacebookAvailable,
 } from "@/lib/facebook-native";
 import { saveBlobToDevice, saveUrlToDevice } from "@/lib/download-folder";
+import {
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import { useToast } from "@/hooks/use-toast";
 
@@ -62,6 +67,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -131,6 +137,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
     }
 
     setDownloading(true);
+    setDownloadProgress({ percent: 0, status: "Starting Facebook download…" });
     setDownloadSuccessInfo(null);
 
     const safeTitle = (info.title || "facebook_video").replace(/[<>:"/\\|?*\x00-\x1f]/g, " ").trim().substring(0, 60);
@@ -155,15 +162,22 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
 
     try {
       if (info.nativeDownload) {
-        await downloadFacebookOnDevice(url, selected, filename, folderName);
+        await downloadFacebookOnDevice(url, selected, filename, folderName, setDownloadProgress);
       } else if (downloadUrl?.startsWith("http") && !downloadUrl.includes("/api/facebook/download")) {
-        await saveUrlToDevice(downloadUrl, filename, folderName);
+        await saveUrlToDevice(downloadUrl, filename, folderName, setDownloadProgress);
       } else {
         if (!downloadUrl) throw new Error("No Facebook download URL is available.");
         const res = await fetch(downloadUrl, { referrerPolicy: "no-referrer" });
         if (!res.ok) throw new Error("Server returned HTTP " + res.status);
-        const blob = await res.blob();
-        await saveBlobToDevice(blob, filename, folderName);
+        const blob = await fetchBlobWithProgress(res, setDownloadProgress, {
+          startPercent: 2,
+          endPercent: 88,
+          status: selected === "audio" ? "Downloading Facebook audio…" : "Downloading Facebook video…",
+        });
+        await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+          startPercent: 88,
+          endPercent: 100,
+        });
       }
 
       saveLocalHistoryRecord({
@@ -191,6 +205,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
       });
     } finally {
       setDownloading(false);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -306,25 +321,10 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
 
       {/* Downloading Animation */}
       {downloading && (
-        <div className="px-4 pb-4 animate-bounce-pop">
-          <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                <ArrowDown className="w-5 h-5 text-primary animate-bounce" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold text-foreground leading-tight flex items-center gap-1.5">
-                  <span>Downloading Facebook video to {folderName}…</span>
-                  <Sparkles className="w-3.5 h-3.5 text-primary animate-spin" />
-                </p>
-                <p className="text-[11px] text-muted-foreground truncate mt-0.5">Saving directly to device folder…</p>
-              </div>
-            </div>
-            <div className="w-full bg-secondary/80 h-1.5 rounded-full overflow-hidden">
-              <div className="bg-gradient-to-r from-primary/40 via-primary to-primary/40 h-full rounded-full animate-pulse w-full" />
-            </div>
-          </div>
-        </div>
+        <DownloadProgressCard
+          title={`Downloading Facebook ${selected === "audio" ? "audio" : "video"} to ${folderName}…`}
+          progress={downloadProgress}
+        />
       )}
 
       {/* Download Complete Visual */}
@@ -367,7 +367,7 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
             {downloading ? (
               <>
                 <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">Downloading Facebook video…</span>
+                <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
               </>
             ) : (
               <>

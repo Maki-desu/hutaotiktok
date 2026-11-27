@@ -28,7 +28,6 @@ import {
   FolderPlus,
   FolderCheck,
   CheckCircle2,
-  ArrowDown,
   ChevronDown,
 } from "lucide-react";
 import { SiTiktok, SiFacebook, SiYoutube, SiX, SiPinterest, SiInstagram } from "react-icons/si";
@@ -55,6 +54,11 @@ import {
   createAndSetDeviceFolder,
   saveBlobToDevice,
 } from "@/lib/download-folder";
+import {
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import { useToast } from "@/hooks/use-toast";
 
@@ -83,7 +87,7 @@ export default function Home() {
 
   // Downloading Animation & Completion Visual State
   const [isDownloadingInApp, setIsDownloadingInApp] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -369,7 +373,7 @@ export default function Home() {
     }
 
     setIsDownloadingInApp(true);
-    setDownloadProgress(0);
+    setDownloadProgress({ percent: 0, status: "Connecting to TikTok…" });
     setDownloadSuccessInfo(null);
 
     try {
@@ -400,33 +404,15 @@ export default function Home() {
       const res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
       if (!res.ok) throw new Error("Server returned HTTP " + res.status);
 
-      const contentLength = res.headers.get("content-length");
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
-      let loaded = 0;
-
-      const reader = res.body?.getReader();
-      const chunks: Uint8Array[] = [];
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            loaded += value.length;
-            if (total > 0) {
-              const percent = Math.min(100, Math.round((loaded / total) * 100));
-              setDownloadProgress(percent);
-            } else {
-              setDownloadProgress((prev) => (prev >= 90 ? 90 : prev + 10));
-            }
-          }
-        }
-      }
-
-      setDownloadProgress(100);
-      const blob = chunks.length > 0 ? new Blob(chunks as unknown as BlobPart[]) : await res.blob();
-      await saveBlobToDevice(blob, filename, folderName);
+      const blob = await fetchBlobWithProgress(res, setDownloadProgress, {
+        startPercent: 2,
+        endPercent: 88,
+        status: quality === "audio" ? "Downloading TikTok audio…" : "Downloading TikTok video…",
+      });
+      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+        startPercent: 88,
+        endPercent: 100,
+      });
 
       saveLocalHistoryRecord({
         title: video.title || "TikTok Video",
@@ -454,7 +440,7 @@ export default function Home() {
       });
     } finally {
       setIsDownloadingInApp(false);
-      setDownloadProgress(0);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -466,7 +452,7 @@ export default function Home() {
     }
 
     setIsZipping(true);
-    setDownloadProgress(0);
+    setDownloadProgress({ percent: 0, status: `Downloading 0 of ${video.photos.length} photos…` });
     setDownloadSuccessInfo(null);
 
     try {
@@ -516,7 +502,10 @@ export default function Home() {
             /* skip failed photo */
           }
           completedPhotos++;
-          setDownloadProgress(Math.round((completedPhotos / totalPhotos) * 100));
+          setDownloadProgress({
+            percent: Math.round((completedPhotos / totalPhotos) * 72),
+            status: `Downloaded ${completedPhotos} of ${totalPhotos} photos…`,
+          });
         }),
       );
 
@@ -524,11 +513,19 @@ export default function Home() {
         throw new Error("Could not download any photos from this TikTok post.");
       }
 
-      const blob = await zip.generateAsync({ type: "blob" });
+      const blob = await zip.generateAsync({ type: "blob" }, (metadata) => {
+        setDownloadProgress({
+          percent: 72 + Math.round((metadata.percent / 100) * 16),
+          status: `Packaging ${savedPhotos} photos into ZIP…`,
+        });
+      });
       const safeTitle = (video.title || "photos").replace(/[^a-z0-9\s]/gi, "").trim() || "photos";
       const filename = `${safeTitle}.zip`;
 
-      await saveBlobToDevice(blob, filename, folderName);
+      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+        startPercent: 88,
+        endPercent: 100,
+      });
 
       setDownloadSuccessInfo({ filename, folder: folderName });
 
@@ -540,7 +537,7 @@ export default function Home() {
       toast({ title: "ZIP creation failed", variant: "destructive" });
     } finally {
       setIsZipping(false);
-      setDownloadProgress(0);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -1003,34 +1000,15 @@ export default function Home() {
               </div>
 
               {/* ── ANIMATED DOWNLOADING BANNER / PROGRESS VISUAL ───────────────── */}
-              {isDownloadingInApp && (
-                <div className="px-4 pb-4 animate-bounce-pop">
-                  <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                        <ArrowDown className="w-5 h-5 text-primary animate-bounce" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-bold text-foreground leading-tight flex items-center justify-between">
-                          <span>Downloading to {folderName}…</span>
-                          <span className="text-primary font-mono font-bold text-sm">{downloadProgress}%</span>
-                        </p>
-                        <p className="text-[11px] text-muted-foreground truncate mt-0.5">Writing file directly to device folder…</p>
-                      </div>
-                    </div>
-                    {/* Live progress bar */}
-                    <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
-                      <div
-                        className="bg-primary h-full rounded-full transition-all duration-300"
-                        style={{ width: `${downloadProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
+              {(isDownloadingInApp || isZipping) && (
+                <DownloadProgressCard
+                  title={isZipping ? `Saving photo ZIP to ${folderName}…` : `Downloading to ${folderName}…`}
+                  progress={downloadProgress}
+                />
               )}
 
               {/* ── DOWNLOAD COMPLETE SUCCESS NOTIFICATION BANNER ──────────────────── */}
-              {downloadSuccessInfo && !isDownloadingInApp && (
+              {downloadSuccessInfo && !isDownloadingInApp && !isZipping && (
                 <div className="px-4 pb-4 animate-success-pop">
                   <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 shadow-md">
                     <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500 shrink-0 mt-0.5">
@@ -1049,14 +1027,14 @@ export default function Home() {
                 <Button
                   data-testid="button-download"
                   type="button"
-                  disabled={isDownloadingInApp || !selectedDownloadUrl}
+                  disabled={isDownloadingInApp || isZipping || !selectedDownloadUrl}
                   onClick={handleDownloadInApp}
                   className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {isDownloadingInApp ? (
                     <>
                       <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                      <span className="min-w-0 truncate">Downloading… {downloadProgress}%</span>
+                      <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
                     </>
                   ) : (
                     <>
@@ -1079,10 +1057,10 @@ export default function Home() {
                       type="button"
                       className="h-7 px-3 text-xs gap-1.5 border-primary/40 text-primary hover:bg-primary/10 hover:border-primary transition-all duration-200 active:scale-95 cursor-pointer"
                       onClick={downloadAllPhotos}
-                      disabled={isZipping}
+                      disabled={isZipping || isDownloadingInApp}
                     >
                       {isZipping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
-                      {isZipping ? `Zipping… ${downloadProgress}%` : "Download ZIP"}
+                      {isZipping ? `Zipping… ${downloadProgress.percent}%` : "Download ZIP"}
                     </Button>
                   </div>
                   <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">

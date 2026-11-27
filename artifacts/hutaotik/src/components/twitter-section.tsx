@@ -11,6 +11,11 @@ import {
 import { SiX } from "react-icons/si";
 import { apiUrl } from "@/lib/api-url";
 import { saveBlobToDevice } from "@/lib/download-folder";
+import {
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import { fetchTwitterFromFx } from "@/lib/twitter-fx";
 import { useToast } from "@/hooks/use-toast";
@@ -71,6 +76,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [selectedHeight, setSelectedHeight] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [error, setError] = useState<string | null>(null);
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{
     filename: string;
@@ -131,6 +137,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
     }
 
     setDownloading(true);
+    setDownloadProgress({ percent: 0, status: "Connecting to X video…" });
     setDownloadSuccessInfo(null);
     const safeTitle = (info.title || "X Video")
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
@@ -179,12 +186,19 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
         throw new Error(`X video download failed (HTTP ${response.status}).`);
       }
 
-      const blob = await response.blob();
+      const blob = await fetchBlobWithProgress(response, setDownloadProgress, {
+        startPercent: 2,
+        endPercent: 88,
+        status: "Downloading X video…",
+      });
       if (blob.size === 0) throw new Error("The server returned an empty video file.");
       if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
         throw new Error("The download provider returned an error page instead of the X video.");
       }
-      await saveBlobToDevice(blob, filename, folderName);
+      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+        startPercent: 88,
+        endPercent: 100,
+      });
 
       saveLocalHistoryRecord({
         title: info.title || "X Video",
@@ -209,6 +223,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
       });
     } finally {
       setDownloading(false);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -293,7 +308,15 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
         )}
       </div>
 
-      {downloadSuccessInfo && (
+      {downloading && (
+        <DownloadProgressCard
+          title={`Downloading X video to ${folderName}…`}
+          progress={downloadProgress}
+          className="px-4 pb-3"
+        />
+      )}
+
+      {downloadSuccessInfo && !downloading && (
         <div className="animate-success-pop mx-4 mb-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5 animate-pill-pop" />
           <div className="min-w-0">
@@ -326,7 +349,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
             {downloading ? (
               <>
                 <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">Downloading X video…</span>
+                <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
               </>
             ) : (
               <>

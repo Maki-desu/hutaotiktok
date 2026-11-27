@@ -1,10 +1,15 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, Music, Loader2, AlertCircle, LockKeyhole, FolderCheck, CheckCircle2, ArrowDown, Sparkles } from "lucide-react";
+import { Download, Music, Loader2, AlertCircle, LockKeyhole, FolderCheck, CheckCircle2 } from "lucide-react";
 import { SiYoutube } from "react-icons/si";
 import { apiUrl } from "@/lib/api-url";
 import { saveBlobToDevice } from "@/lib/download-folder";
+import {
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import { useToast } from "@/hooks/use-toast";
 import { isYouTubeUrl } from "@/lib/youtube-url";
@@ -77,6 +82,7 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [nativeOnDevice, setNativeOnDevice] = useState(false);
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
@@ -136,6 +142,7 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
     }
 
     setDownloading(true);
+    setDownloadProgress({ percent: 0, status: "Starting YouTube download…" });
     setDownloadSuccessInfo(null);
 
     let downloadUrl: string;
@@ -161,7 +168,8 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
           url,
           selected.type === "audio" ? "audio" : selected.formatStr,
           filename,
-          folderName
+          folderName,
+          setDownloadProgress,
         );
         saveLocalHistoryRecord({
           title: info.title || "YouTube Video",
@@ -186,12 +194,19 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
         await parseApiResponse<{ error?: string }>(res);
         throw new Error(`YouTube download failed (${res.status}).`);
       }
-      const blob = await res.blob();
+      const blob = await fetchBlobWithProgress(res, setDownloadProgress, {
+        startPercent: 2,
+        endPercent: 88,
+        status: selected.type === "audio" ? "Downloading YouTube audio…" : "Downloading YouTube video…",
+      });
       if (blob.size === 0) throw new Error("The server returned an empty video file.");
       if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
         throw new Error("The server returned an error page instead of the YouTube video.");
       }
-      await saveBlobToDevice(blob, filename, folderName);
+      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+        startPercent: 88,
+        endPercent: 100,
+      });
 
       saveLocalHistoryRecord({
         title: info.title || "YouTube Video",
@@ -218,6 +233,7 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
       });
     } finally {
       setDownloading(false);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -345,25 +361,10 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
 
       {/* Downloading Animation */}
       {downloading && (
-        <div className="px-4 pb-4 animate-bounce-pop">
-          <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                <ArrowDown className="w-5 h-5 text-primary animate-bounce" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold text-foreground leading-tight flex items-center gap-1.5">
-                  <span>Downloading YouTube video to {folderName}…</span>
-                  <Sparkles className="w-3.5 h-3.5 text-primary animate-spin" />
-                </p>
-                <p className="text-[11px] text-muted-foreground truncate mt-0.5">Processing & saving to device folder…</p>
-              </div>
-            </div>
-            <div className="w-full bg-secondary/80 h-1.5 rounded-full overflow-hidden">
-              <div className="bg-gradient-to-r from-primary/40 via-primary to-primary/40 h-full rounded-full animate-pulse w-full" />
-            </div>
-          </div>
-        </div>
+        <DownloadProgressCard
+          title={`Downloading YouTube ${isAudio ? "audio" : "video"} to ${folderName}…`}
+          progress={downloadProgress}
+        />
       )}
 
       {/* Download Complete Visual */}
@@ -406,7 +407,7 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
             {downloading ? (
               <>
                 <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">Downloading YouTube video…</span>
+                <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
               </>
             ) : (
               <>

@@ -17,6 +17,8 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { saveBlobToDevice, getStoredFolderName } from "@/lib/download-folder";
+import { type DownloadProgressState } from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { useToast } from "@/hooks/use-toast";
 
 function formatBytes(bytes: number, decimals = 2) {
@@ -76,6 +78,8 @@ export function TaoCompressorSection({
   const [compressProgress, setCompressProgress] = useState(0);
   const [compressedBlob, setCompressedBlob] = useState<Blob | null>(null);
   const [compressedUrl, setCompressedUrl] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -373,11 +377,16 @@ export function TaoCompressorSection({
       return;
     }
 
+    setIsExporting(true);
+    setExportProgress({ percent: 0, status: "Saving compressed video…" });
     try {
       const extension = compressedBlob.type.includes("mp4") ? "mp4" : "webm";
       const filename = `Taocompress_${Date.now()}.${extension}`;
 
-      await saveBlobToDevice(compressedBlob, filename, targetFolder);
+      await saveBlobToDevice(compressedBlob, filename, targetFolder, setExportProgress, {
+        startPercent: 0,
+        endPercent: 100,
+      });
 
       setDownloadSuccessInfo({ filename, folder: targetFolder });
       toast({
@@ -391,6 +400,9 @@ export function TaoCompressorSection({
         description: e instanceof Error ? e.message : "Could not save compressed video.",
         variant: "destructive",
       });
+    } finally {
+      setIsExporting(false);
+      setExportProgress({ percent: 0 });
     }
   };
 
@@ -618,8 +630,17 @@ export function TaoCompressorSection({
             </div>
           </div>
 
+          {/* Saving Export Progress */}
+          {isExporting && (
+            <DownloadProgressCard
+              title={`Saving compressed video to ${folderName || getStoredFolderName() || "HutaoTik Downloads"}…`}
+              progress={exportProgress}
+              className=""
+            />
+          )}
+
           {/* Export Success Visual */}
-          {downloadSuccessInfo && (
+          {downloadSuccessInfo && !isExporting && (
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 animate-in fade-in duration-300">
               <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
@@ -660,11 +681,20 @@ export function TaoCompressorSection({
               <Button
                 type="button"
                 onClick={handleDownloadCompressed}
-                disabled={isCompressing}
+                disabled={isCompressing || isExporting}
                 className="flex-1 min-w-0 max-w-full overflow-hidden h-11 px-4 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
               >
-                <Download className="w-4 h-4 shrink-0" />
-                <span className="min-w-0 truncate">Download Compressed Video</span>
+                {isExporting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                    <span className="min-w-0 truncate">Saving… {exportProgress.percent}%</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0 truncate">Download Compressed Video</span>
+                  </>
+                )}
               </Button>
             )}
           </div>

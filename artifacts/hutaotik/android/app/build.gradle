@@ -2,8 +2,8 @@ apply plugin: 'com.android.application'
 
 def configuredAppId = project.findProperty('appId') ?: "com.hutaotik.app"
 def configuredAppName = configuredAppId == "com.hutaotik.admin" ? "Hutaotik Admin" : "HutaoTik"
-def configuredVersionCode = (project.findProperty('appVersionCode') ?: "29").toInteger()
-def configuredVersionName = project.findProperty('appVersionName') ?: "1.2.13"
+def configuredVersionCode = (project.findProperty('appVersionCode') ?: "32").toInteger()
+def configuredVersionName = project.findProperty('appVersionName') ?: "1.2.16"
 def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
 def releaseKeystorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
 def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')

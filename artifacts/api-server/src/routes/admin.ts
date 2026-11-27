@@ -7,9 +7,8 @@ import {
 } from "@workspace/api-zod";
 import {
   requireAdmin,
-  ADMIN_PASSWORD,
-  ADMIN_SESSION_SECRET,
   createAdminToken,
+  timingSafeStringEqual,
 } from "../middlewares/admin";
 
 const router: IRouter = Router();
@@ -21,12 +20,14 @@ router.post("/admin/login", async (req, res): Promise<void> => {
     return;
   }
 
-  if (!ADMIN_PASSWORD || !ADMIN_SESSION_SECRET || ADMIN_SESSION_SECRET.length < 32) {
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  const sessionSecret = process.env.ADMIN_SESSION_SECRET;
+  if (!adminPassword || !sessionSecret || sessionSecret.length < 32) {
     res.status(503).json({ error: "Admin login is not securely configured on the server." });
     return;
   }
 
-  if (parsed.data.password !== ADMIN_PASSWORD) {
+  if (!timingSafeStringEqual(parsed.data.password, adminPassword)) {
     res.status(401).json({ error: "Invalid password" });
     return;
   }

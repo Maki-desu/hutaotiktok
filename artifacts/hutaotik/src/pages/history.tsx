@@ -14,6 +14,7 @@ import { Loader2, History as HistoryIcon, Download, LockKeyhole, Trash2, ArrowDo
 import { SiTiktok, SiYoutube, SiFacebook, SiX, SiPinterest, SiInstagram } from "react-icons/si";
 import { getLocalHistory, clearLocalHistory, LocalHistoryRecord } from "@/lib/local-history";
 import { getStoredFolderName, saveBlobToDevice } from "@/lib/download-folder";
+import { fetchBlobWithProgress } from "@/lib/download-progress";
 import { downloadFacebookOnDevice, isNativeFacebookAvailable } from "@/lib/facebook-native";
 import {
   downloadSocialVideoOnDevice,
@@ -139,6 +140,7 @@ export default function History() {
               isSocialImage ? "image" : "video",
               filename,
               folderName,
+              (p) => setProgress(p.percent),
             );
             setProgress(100);
             toast({
@@ -169,7 +171,13 @@ export default function History() {
           }
           formatStr = selectedFormat.formatStr;
         }
-        await downloadYouTubeOnDevice(record.sourceUrl, formatStr, filename, folderName);
+        await downloadYouTubeOnDevice(
+          record.sourceUrl,
+          formatStr,
+          filename,
+          folderName,
+          (p) => setProgress(p.percent),
+        );
         setProgress(100);
         toast({
           title: "Re-download Complete!",
@@ -180,7 +188,13 @@ export default function History() {
 
       if (record.platform === "facebook" && record.sourceUrl && isNativeFacebookAvailable()) {
         const quality = ext === "mp3" ? "audio" : record.quality.toLowerCase().includes("sd") ? "sd" : "hd";
-        await downloadFacebookOnDevice(record.sourceUrl, quality, filename, folderName);
+        await downloadFacebookOnDevice(
+          record.sourceUrl,
+          quality,
+          filename,
+          folderName,
+          (p) => setProgress(p.percent),
+        );
         setProgress(100);
         toast({
           title: "Re-download Complete!",
@@ -202,32 +216,14 @@ export default function History() {
       }
       if (!res.ok) throw new Error("Server returned HTTP " + res.status);
 
-      const contentLength = res.headers.get("content-length");
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
-      let loaded = 0;
-
-      const reader = res.body?.getReader();
-      const chunks: Uint8Array[] = [];
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            loaded += value.length;
-            if (total > 0) {
-              setProgress(Math.min(100, Math.round((loaded / total) * 100)));
-            } else {
-              setProgress((p) => (p >= 90 ? 90 : p + 10));
-            }
-          }
-        }
-      }
-
-      setProgress(100);
-      const blob = chunks.length > 0 ? new Blob(chunks as unknown as BlobPart[]) : await res.blob();
-      await saveBlobToDevice(blob, filename, folderName);
+      const blob = await fetchBlobWithProgress(res, (p) => setProgress(p.percent), {
+        startPercent: 2,
+        endPercent: 88,
+      });
+      await saveBlobToDevice(blob, filename, folderName, (p) => setProgress(p.percent), {
+        startPercent: 88,
+        endPercent: 100,
+      });
 
       toast({
         title: "Re-download Complete!",

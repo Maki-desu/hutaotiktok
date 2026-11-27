@@ -1,7 +1,23 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { PushNotifications } from "@capacitor/push-notifications";
+import { ArrowUpCircle, ExternalLink, Loader2, ShieldAlert } from "lucide-react";
 import { apiUrl } from "@/lib/api-url";
+import {
+  fetchLatestRelease,
+  getInstalledAppVersion,
+  isDirectApkInstallUrl,
+  isUpdateNewer,
+  registerAppUpdateProgressListener,
+  resolveReleaseDownloadUrl,
+  sendDeviceCheckIn,
+  startAppUpdateInstall,
+  toDownloadProgressState,
+  type AppUpdateProgressEvent,
+  type AvailableRelease,
+} from "@/lib/app-updates";
+import { DownloadProgressCard } from "@/components/download-progress-card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,74 +28,62 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type AvailableRelease = {
-  versionCode: number;
-  versionName: string;
-  changelog: string;
-  downloadUrl: string;
-  sha256: string | null;
-};
-
-function isAvailableRelease(value: unknown): value is AvailableRelease {
-  if (typeof value !== "object" || value === null) return false;
-  const release = value as Record<string, unknown>;
-  return (
-    typeof release.versionCode === "number" &&
-    Number.isSafeInteger(release.versionCode) &&
-    typeof release.versionName === "string" &&
-    typeof release.changelog === "string" &&
-    typeof release.downloadUrl === "string" &&
-    (release.sha256 === null ||
-      (typeof release.sha256 === "string" && /^[0-9a-f]{64}$/i.test(release.sha256)))
-  );
-}
-
-const currentVersionCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "16", 10);
-
 export function AppUpdateChecker() {
   const [release, setRelease] = useState<AvailableRelease | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [progressEvent, setProgressEvent] = useState<AppUpdateProgressEvent | null>(null);
+
+  const checkForUpdate = useCallback(async () => {
+    try {
+      const { versionCode } = getInstalledAppVersion();
+      const latest = await fetchLatestRelease();
+      if (!latest || !isUpdateNewer(latest.versionCode, versionCode)) {
+        return;
+      }
+      setRelease(latest);
+    } catch (error) {
+      console.error("Could not check for Hutaotik updates.", error);
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-
-    const checkForUpdate = async () => {
-      try {
-        const response = await fetch(apiUrl("/api/app-updates/latest"), { cache: "no-store" });
-        if (response.status === 404) return;
-        if (!response.ok) throw new Error(`Update check failed with HTTP ${response.status}.`);
-        const payload: unknown = await response.json();
-        if (!isAvailableRelease(payload)) {
-          throw new Error("The update service returned invalid release metadata.");
-        }
-        const latest = payload;
-        const serviceUrl = new URL(apiUrl("/"));
-        const releaseUrl = new URL(latest.downloadUrl, serviceUrl);
-        if (releaseUrl.protocol !== "https:" || releaseUrl.username || releaseUrl.password) {
-          throw new Error("The update service returned an unsafe APK download URL.");
-        }
-        if (!active || latest.versionCode <= currentVersionCode) return;
-        setRelease(latest);
-      } catch (error) {
-        console.error("Could not check for Hutaotik updates.", error);
-      }
-    };
-
+    void sendDeviceCheckIn().catch(() => {});
     void checkForUpdate();
+
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") void checkForUpdate();
     };
-    const onPushOpen = () => void checkForUpdate();
-    window.addEventListener("focus", checkForUpdate);
+    const onManualCheck = () => void checkForUpdate();
+
+    window.addEventListener("focus", onManualCheck);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("hutaotik:check-update", onPushOpen);
+    window.addEventListener("hutaotik:check-update", onManualCheck);
 
     return () => {
-      active = false;
-      window.removeEventListener("focus", checkForUpdate);
+      window.removeEventListener("focus", onManualCheck);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("hutaotik:check-update", onPushOpen);
+      window.removeEventListener("hutaotik:check-update", onManualCheck);
     };
+  }, [checkForUpdate]);
+
+  useEffect(() => {
+    return registerAppUpdateProgressListener((event) => {
+      setProgressEvent(event);
+      if (event.status === "failed") {
+        setDownloading(false);
+        setInstallError(
+          event.message || "Update download failed. You can retry or open the link in your browser.",
+        );
+      } else if (event.status === "permission_required") {
+        setDownloading(false);
+        setInstallError(
+          "Allow HutaoTik to install unknown apps in Android settings, then tap Update again.",
+        );
+      } else if (event.status === "installing" || event.status === "completed") {
+        setDownloading(false);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -109,11 +113,13 @@ export function AppUpdateChecker() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: value }),
-        }).then((response) => {
-          if (!response.ok) throw new Error(`Device registration failed with HTTP ${response.status}.`);
-        }).catch((error: unknown) => {
-          console.error("Could not register this device for update alerts.", error);
-        });
+        })
+          .then((response) => {
+            if (!response.ok) throw new Error(`Device registration failed with HTTP ${response.status}.`);
+          })
+          .catch((error: unknown) => {
+            console.error("Could not register this device for update alerts.", error);
+          });
       });
       errorListener = await PushNotifications.addListener("registrationError", (error) => {
         console.error("Could not register for Hutaotik update alerts.", error);
@@ -145,57 +151,135 @@ export function AppUpdateChecker() {
   const startInstall = () => {
     if (!release) return;
     setInstallError(null);
-    const downloadUrl = new URL(release.downloadUrl, apiUrl("/")).toString();
-    const nativeInstall = window.AndroidStorageBridge?.installAppUpdate;
-    const releaseUrl = new URL(downloadUrl);
-    const isServiceDownload =
-      releaseUrl.origin === new URL(apiUrl("/")).origin &&
-      /^\/api\/app-updates\/\d+\/download$/.test(releaseUrl.pathname);
-    const isDirectApk = releaseUrl.pathname.toLowerCase().endsWith(".apk");
+    const directApk = isDirectApkInstallUrl(release.downloadUrl);
+    const outcome = startAppUpdateInstall(release);
 
-    if (Capacitor.isNativePlatform() && nativeInstall && (isServiceDownload || isDirectApk)) {
-      const result = nativeInstall(downloadUrl, release.sha256 ?? "");
-      if (result === "permission_required") {
-        setInstallError("Allow Hutaotik to install unknown apps in Android settings, then tap Update again.");
-      } else if (result !== "started") {
-        setInstallError("The APK download could not be started. Check your connection and try again.");
-      }
+    if (outcome === "started" && directApk) {
+      setDownloading(true);
+      setProgressEvent({ status: "downloading", percent: 2, message: "Starting APK download…" });
       return;
     }
+    if (outcome === "permission_required") {
+      setInstallError("Allow HutaoTik to install unknown apps in Android settings, then tap Update again.");
+      return;
+    }
+    if (outcome === "failed") {
+      setInstallError("The APK download could not be started. Try opening the link in your browser.");
+    }
+  };
 
+  const openInBrowser = () => {
+    if (!release) return;
+    const downloadUrl = resolveReleaseDownloadUrl(release.downloadUrl).toString();
     window.open(downloadUrl, "_blank", "noopener,noreferrer");
   };
 
-  const releaseUrl = release ? new URL(release.downloadUrl, apiUrl("/")) : null;
-  const serviceUrl = releaseUrl ? new URL(apiUrl("/")) : null;
-  const isServiceDownload =
-    releaseUrl !== null &&
-    serviceUrl !== null &&
-    releaseUrl.origin === serviceUrl.origin &&
-    /^\/api\/app-updates\/\d+\/download$/.test(releaseUrl.pathname);
-  const isDirectApk = releaseUrl?.pathname.toLowerCase().endsWith(".apk") ?? false;
+  const isMandatory = release?.isMandatory === true;
+  const isDirectApk = release ? isDirectApkInstallUrl(release.downloadUrl) : false;
 
   return (
-    <Dialog open={release !== null} onOpenChange={(open) => {
-      if (!open) {
-        setRelease(null);
-        setInstallError(null);
-      }
-    }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Hutaotik {release?.versionName} is available</DialogTitle>
-          <DialogDescription>
+    <Dialog
+      open={release !== null}
+      onOpenChange={(open) => {
+        if (!open && !isMandatory && !downloading) {
+          setRelease(null);
+          setInstallError(null);
+          setProgressEvent(null);
+        }
+      }}
+    >
+      <DialogContent
+        className="max-w-md rounded-2xl border-border bg-card"
+        onInteractOutside={(event) => {
+          if (isMandatory || downloading) event.preventDefault();
+        }}
+        onEscapeKeyDown={(event) => {
+          if (isMandatory || downloading) event.preventDefault();
+        }}
+      >
+        <DialogHeader className="space-y-2 text-left">
+          <div className="flex items-center gap-2">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
+              {isMandatory ? <ShieldAlert className="h-5 w-5" /> : <ArrowUpCircle className="h-5 w-5" />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <DialogTitle className="text-base font-bold">
+                  HutaoTik {release?.versionName} is available
+                </DialogTitle>
+                {isMandatory && (
+                  <Badge variant="destructive" className="text-[10px]">
+                    Required
+                  </Badge>
+                )}
+              </div>
+              {release?.title && (
+                <p className="text-xs font-semibold text-primary mt-0.5">{release.title}</p>
+              )}
+            </div>
+          </div>
+          <DialogDescription className="whitespace-pre-wrap pt-1 text-xs leading-relaxed text-muted-foreground">
             {release?.changelog || "Install the latest version to get the newest improvements."}
           </DialogDescription>
         </DialogHeader>
-        {installError && <p role="alert" className="text-sm text-destructive">{installError}</p>}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setRelease(null)}>Later</Button>
-          <Button onClick={startInstall}>
-            {isServiceDownload || isDirectApk
-              ? "Download and update"
-              : "Open update link"}
+
+        {downloading && progressEvent && (
+          <DownloadProgressCard
+            title={`Downloading HutaoTik v${release?.versionName}…`}
+            progress={toDownloadProgressState(progressEvent)}
+            className=""
+          />
+        )}
+
+        {installError && (
+          <div className="space-y-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3">
+            <p role="alert" className="text-xs text-destructive">
+              {installError}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={openInBrowser}
+              className="h-8 w-full gap-1.5 text-xs"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open download link in browser
+            </Button>
+          </div>
+        )}
+
+        <DialogFooter className="gap-2 sm:gap-2">
+          {!isMandatory && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={downloading}
+              onClick={() => {
+                setRelease(null);
+                setInstallError(null);
+                setProgressEvent(null);
+              }}
+            >
+              Later
+            </Button>
+          )}
+          <Button
+            type="button"
+            disabled={downloading}
+            onClick={startInstall}
+            className="gap-2 font-bold"
+          >
+            {downloading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Downloading… {progressEvent?.percent ?? 0}%
+              </>
+            ) : isDirectApk ? (
+              "Download and update"
+            ) : (
+              "Open update link"
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

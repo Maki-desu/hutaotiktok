@@ -49,3 +49,5 @@ Thumbs.db
 .local/
 *.apk
 Admin-signing-credentials.txt
+.env*.local
+.admin-app-key.local

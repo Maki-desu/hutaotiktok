@@ -46,6 +46,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class MainActivity extends BridgeActivity {
@@ -60,6 +61,8 @@ public class MainActivity extends BridgeActivity {
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Object ytDlpUpdateLock = new Object();
+    private volatile BroadcastReceiver activeUpdateReceiver;
+    private volatile AtomicBoolean activeUpdatePollCancelled;
     private volatile String facebookInitError;
     private volatile String facebookFfmpegInitError;
     private volatile String youtubeInitError;
@@ -83,7 +86,56 @@ public class MainActivity extends BridgeActivity {
         handleSendIntent(getIntent());
     }
 
+    @Override
+    public void onDestroy() {
+        unregisterActiveUpdateReceiver();
+        super.onDestroy();
+    }
+
+    private void unregisterActiveUpdateReceiver() {
+        AtomicBoolean cancelled = activeUpdatePollCancelled;
+        if (cancelled != null) cancelled.set(true);
+        BroadcastReceiver receiver = activeUpdateReceiver;
+        activeUpdateReceiver = null;
+        if (receiver != null) {
+            try {
+                unregisterReceiver(receiver);
+            } catch (IllegalArgumentException ignored) {
+                // Already unregistered
+            }
+        }
+    }
+
+    private void sendAppUpdateProgress(String status, int percent, long loadedBytes, long totalBytes, String message) {
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("status", status);
+            payload.put("percent", Math.max(0, Math.min(100, percent)));
+            if (loadedBytes > 0) payload.put("loadedBytes", loadedBytes);
+            if (totalBytes > 0) payload.put("totalBytes", totalBytes);
+            if (message != null && !message.isEmpty()) payload.put("message", message);
+        } catch (JSONException e) {
+            return;
+        }
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null) return;
+        String script = "window.onAppUpdateProgress && window.onAppUpdateProgress(" +
+            JSONObject.quote(payload.toString()) + ");";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
     public class WebAppInterface {
+        @JavascriptInterface
+        public String getDeviceInfo() {
+            JSONObject info = new JSONObject();
+            try {
+                info.put("model", Build.MODEL != null ? Build.MODEL : "Android");
+                info.put("androidVersion", Build.VERSION.RELEASE != null ? Build.VERSION.RELEASE : "");
+            } catch (JSONException ignored) {
+            }
+            return info.toString();
+        }
+
         @JavascriptInterface
         public String installAppUpdate(String rawUrl, String expectedSha256) {
             if (rawUrl == null || !rawUrl.startsWith("https://") ||
@@ -101,6 +153,7 @@ public class MainActivity extends BridgeActivity {
                     );
                     startActivity(settingsIntent);
                 });
+                sendAppUpdateProgress("permission_required", 0, 0, 0, "Allow installing unknown apps in Android settings.");
                 return "permission_required";
             }
 
@@ -113,6 +166,10 @@ public class MainActivity extends BridgeActivity {
             if (manager == null) return "failed";
 
             try {
+                unregisterActiveUpdateReceiver();
+                AtomicBoolean pollCancelled = new AtomicBoolean(false);
+                activeUpdatePollCancelled = pollCancelled;
+
                 DownloadManager.Request request = new DownloadManager.Request(Uri.parse(rawUrl));
                 request.setTitle("Hutaotik update");
                 request.setDescription("Downloading the latest Hutaotik release");
@@ -124,6 +181,8 @@ public class MainActivity extends BridgeActivity {
                     apkFile.getName()
                 );
                 long downloadId = manager.enqueue(request);
+                sendAppUpdateProgress("downloading", 2, 0, 0, "Starting APK download…");
+
                 BroadcastReceiver receiver = new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
@@ -132,22 +191,28 @@ public class MainActivity extends BridgeActivity {
                             return;
                         }
 
-                        unregisterReceiver(this);
+                        pollCancelled.set(true);
+                        unregisterActiveUpdateReceiver();
                         updateExecutor.execute(() -> {
                             try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(downloadId))) {
                                 if (cursor == null || !cursor.moveToFirst() ||
                                     cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) !=
                                         DownloadManager.STATUS_SUCCESSFUL) {
+                                    sendAppUpdateProgress("failed", 0, 0, 0, "Update APK download failed.");
                                     showUpdateToast("Hutaotik update download failed.");
                                     return;
                                 }
-                                if (!expectedSha256.isEmpty() &&
-                                    !expectedSha256.equalsIgnoreCase(calculateSha256(apkFile))) {
-                                    apkFile.delete();
-                                    showUpdateToast("The downloaded update failed its integrity check.");
-                                    return;
+                                if (!expectedSha256.isEmpty()) {
+                                    sendAppUpdateProgress("verifying", 97, apkFile.length(), apkFile.length(), "Verifying APK checksum…");
+                                    if (!expectedSha256.equalsIgnoreCase(calculateSha256(apkFile))) {
+                                        apkFile.delete();
+                                        sendAppUpdateProgress("failed", 0, 0, 0, "The downloaded APK failed its SHA-256 integrity check.");
+                                        showUpdateToast("The downloaded update failed its integrity check.");
+                                        return;
+                                    }
                                 }
 
+                                sendAppUpdateProgress("installing", 100, apkFile.length(), apkFile.length(), "Opening Android package installer…");
                                 Uri apkUri = FileProvider.getUriForFile(
                                     MainActivity.this,
                                     getPackageName() + ".fileprovider",
@@ -160,19 +225,56 @@ public class MainActivity extends BridgeActivity {
                                 );
                                 runOnUiThread(() -> startActivity(installIntent));
                             } catch (Exception e) {
+                                sendAppUpdateProgress("failed", 0, 0, 0, "Could not open the installer: " + e.getMessage());
                                 showUpdateToast("Could not open the Hutaotik installer: " + e.getMessage());
                             }
                         });
                     }
                 };
+                activeUpdateReceiver = receiver;
                 IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
                 } else {
                     registerReceiver(receiver, filter);
                 }
+
+                // Poll DownloadManager progress so the user sees a live percentage inside HutaoTik
+                new Thread(() -> {
+                    while (!pollCancelled.get()) {
+                        try {
+                            Thread.sleep(350);
+                        } catch (InterruptedException e) {
+                            break;
+                        }
+                        if (pollCancelled.get()) break;
+                        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(downloadId))) {
+                            if (cursor == null || !cursor.moveToFirst()) break;
+                            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                            long downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+                            long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+                            if (status == DownloadManager.STATUS_RUNNING || status == DownloadManager.STATUS_PENDING) {
+                                int percent = total > 0
+                                    ? 2 + (int) Math.min(93, Math.round((downloaded * 93.0) / total))
+                                    : (downloaded > 0 ? 15 : 2);
+                                String stage = status == DownloadManager.STATUS_PENDING
+                                    ? "Connecting to download server…"
+                                    : "Downloading update APK…";
+                                sendAppUpdateProgress("downloading", percent, downloaded, total > 0 ? total : 0, stage);
+                            } else if (status == DownloadManager.STATUS_PAUSED) {
+                                sendAppUpdateProgress("downloading", total > 0 ? (int) Math.round((downloaded * 93.0) / total) : 5, downloaded, total > 0 ? total : 0, "Waiting for network…");
+                            } else if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
+                                break;
+                            }
+                        } catch (Exception ignored) {
+                            break;
+                        }
+                    }
+                }, "hutaotik-update-progress").start();
+
                 return "started";
             } catch (RuntimeException e) {
+                sendAppUpdateProgress("failed", 0, 0, 0, "Could not start the update download.");
                 return "failed";
             }
         }

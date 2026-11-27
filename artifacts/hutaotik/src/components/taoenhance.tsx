@@ -18,6 +18,8 @@ import {
   Layers,
 } from "lucide-react";
 import { saveBlobToDevice, getStoredFolderName } from "@/lib/download-folder";
+import { type DownloadProgressState } from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { useToast } from "@/hooks/use-toast";
 
 interface ImageItem {
@@ -44,6 +46,8 @@ export function TaoenhanceSection({
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState("Processing...");
   const [processingProgress, setProcessingProgress] = useState(0);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -210,6 +214,8 @@ export function TaoenhanceSection({
     const enhancedItems = imageList.filter((item) => item.enhancedUrl);
     if (enhancedItems.length === 0) return;
 
+    setIsExporting(true);
+    setExportProgress({ percent: 0, status: "Preparing export…" });
     try {
       if (enhancedItems.length === 1) {
         // Single photo export
@@ -217,7 +223,10 @@ export function TaoenhanceSection({
         const blob = await resp.blob();
         const filename = `Taoenhance_${Date.now()}.png`;
 
-        await saveBlobToDevice(blob, filename, targetFolder);
+        await saveBlobToDevice(blob, filename, targetFolder, setExportProgress, {
+          startPercent: 15,
+          endPercent: 100,
+        });
         setDownloadSuccessInfo({ filename, folder: targetFolder });
       } else {
         // Batch ZIP export
@@ -229,12 +238,24 @@ export function TaoenhanceSection({
           const resp = await fetch(enhancedItems[i].enhancedUrl!);
           const blob = await resp.blob();
           folder.file(`taoenhance-photo-${i + 1}.png`, blob);
+          setExportProgress({
+            percent: Math.round(((i + 1) / enhancedItems.length) * 55),
+            status: `Adding photo ${i + 1} of ${enhancedItems.length}…`,
+          });
         }
 
-        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const zipBlob = await zip.generateAsync({ type: "blob" }, (metadata) => {
+          setExportProgress({
+            percent: 55 + Math.round((metadata.percent / 100) * 30),
+            status: "Packaging ZIP archive…",
+          });
+        });
         const filename = `Taoenhance_Batch_${enhancedItems.length}_Photos.zip`;
 
-        await saveBlobToDevice(zipBlob, filename, targetFolder);
+        await saveBlobToDevice(zipBlob, filename, targetFolder, setExportProgress, {
+          startPercent: 85,
+          endPercent: 100,
+        });
         setDownloadSuccessInfo({ filename, folder: targetFolder });
       }
 
@@ -248,6 +269,9 @@ export function TaoenhanceSection({
         description: "Could not save enhanced images.",
         variant: "destructive",
       });
+    } finally {
+      setIsExporting(false);
+      setExportProgress({ percent: 0 });
     }
   };
 
@@ -530,8 +554,16 @@ export function TaoenhanceSection({
             </div>
           </div>
 
+          {isExporting && (
+            <DownloadProgressCard
+              title={`Saving to ${folderName || getStoredFolderName() || "HutaoTik Downloads"}…`}
+              progress={exportProgress}
+              className=""
+            />
+          )}
+
           {/* Download Completion visual */}
-          {downloadSuccessInfo && (
+          {downloadSuccessInfo && !isExporting && (
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 animate-in fade-in duration-300">
               <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
@@ -567,18 +599,23 @@ export function TaoenhanceSection({
               <Button
                 type="button"
                 onClick={handleDownloadAll}
-                disabled={isProcessing}
-                className="flex-1 h-11 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
+                disabled={isProcessing || isExporting}
+                className="flex-1 min-w-0 max-w-full overflow-hidden h-11 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
               >
-                {imageList.length > 1 ? (
+                {isExporting ? (
                   <>
-                    <Package className="w-4 h-4" />
-                    <span>Download All {imageList.length} Enhanced (ZIP)</span>
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                    <span className="min-w-0 truncate">Saving… {exportProgress.percent}%</span>
+                  </>
+                ) : imageList.length > 1 ? (
+                  <>
+                    <Package className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0 truncate">Download All {imageList.length} Enhanced (ZIP)</span>
                   </>
                 ) : (
                   <>
-                    <Download className="w-4 h-4" />
-                    <span>Download Enhanced Image</span>
+                    <Download className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0 truncate">Download Enhanced Image</span>
                   </>
                 )}
               </Button>

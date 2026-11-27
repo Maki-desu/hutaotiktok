@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  ArrowDown,
   CheckCircle2,
   Download,
   FolderCheck,
@@ -9,13 +8,17 @@ import {
   Loader2,
   LockKeyhole,
   RefreshCw,
-  Sparkles,
 } from "lucide-react";
 import { SiInstagram, SiPinterest } from "react-icons/si";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiUrl } from "@/lib/api-url";
 import { saveBlobToDevice } from "@/lib/download-folder";
+import {
+  fetchBlobWithProgress,
+  type DownloadProgressState,
+} from "@/lib/download-progress";
+import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import {
   downloadSocialVideoOnDevice,
@@ -98,6 +101,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
   const [info, setInfo] = useState<SocialVideoInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [error, setError] = useState<string | null>(null);
   const [thumbFailed, setThumbFailed] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -190,7 +194,11 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       throw new Error(message);
     }
 
-    const blob = await response.blob();
+    const blob = await fetchBlobWithProgress(response, setDownloadProgress, {
+      startPercent: 2,
+      endPercent: 88,
+      status: `Downloading ${providerName} ${isImage ? "image" : "video"}…`,
+    });
     if (blob.size === 0) throw new Error(`The ${providerName} service returned an empty file.`);
     if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
       throw new Error(`The ${providerName} service returned an error instead of media.`);
@@ -203,7 +211,10 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
     else if (blob.type.includes("image/jpeg")) ext = "jpg";
 
     const filename = `${safeTitle}.${ext}`;
-    await saveBlobToDevice(blob, filename, targetFolder);
+    await saveBlobToDevice(blob, filename, targetFolder, setDownloadProgress, {
+      startPercent: 88,
+      endPercent: 100,
+    });
     return filename;
   };
 
@@ -215,6 +226,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
     }
 
     setDownloading(true);
+    setDownloadProgress({ percent: 0, status: `Starting ${providerName} download…` });
     setDownloadSuccessInfo(null);
     const isImage = info.mediaType === "image";
     const safeTitle =
@@ -235,6 +247,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
             isImage ? "image" : "video",
             initialFilename,
             folderName,
+            setDownloadProgress,
           );
           savedFilename = nativeResult.filename || initialFilename;
         } catch (nativeErr) {
@@ -278,6 +291,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       });
     } finally {
       setDownloading(false);
+      setDownloadProgress({ percent: 0 });
     }
   };
 
@@ -364,27 +378,11 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       </div>
 
       {downloading && (
-        <div className="px-4 pb-3 animate-bounce-pop">
-          <div className="bg-primary/10 border border-primary/30 rounded-xl p-3 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                <ArrowDown className="w-5 h-5 text-primary animate-bounce" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold text-foreground leading-tight flex items-center gap-1.5">
-                  <span>Downloading {providerName} {isImage ? "image" : "video"} to {folderName}…</span>
-                  <Sparkles className="w-3.5 h-3.5 text-primary animate-spin" />
-                </p>
-                <p className="text-[11px] text-muted-foreground truncate mt-0.5">
-                  Saving directly to device folder…
-                </p>
-              </div>
-            </div>
-            <div className="w-full bg-secondary/80 h-1.5 rounded-full overflow-hidden">
-              <div className="bg-gradient-to-r from-primary/40 via-primary to-primary/40 h-full rounded-full animate-pulse w-full" />
-            </div>
-          </div>
-        </div>
+        <DownloadProgressCard
+          title={`Downloading ${providerName} ${isImage ? "image" : "video"} to ${folderName}…`}
+          progress={downloadProgress}
+          className="px-4 pb-3"
+        />
       )}
 
       {downloadSuccessInfo && !downloading && (
@@ -437,7 +435,7 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
             {downloading ? (
               <>
                 <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">Downloading highest quality…</span>
+                <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
               </>
             ) : (
               <>
