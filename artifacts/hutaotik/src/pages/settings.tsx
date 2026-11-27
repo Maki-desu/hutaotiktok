@@ -1,11 +1,44 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bell, BellRing, ChevronDown, HardDrive, ImagePlus, Loader2, Palette, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Bell,
+  BellRing,
+  Check,
+  ChevronDown,
+  HardDrive,
+  ImagePlus,
+  Loader2,
+  Minus,
+  MonitorSmartphone,
+  Palette,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Trash2,
+  Type,
+} from "lucide-react";
 import {
   clearTemporaryCache,
   formatStorageBytes,
   inspectCacheStorage,
   type CacheStorageInfo,
 } from "@/lib/cache-storage";
+import {
+  FONT_STYLE_PRESETS,
+  getFontStylePreset,
+  loadFontStyle,
+  saveFontStyle,
+  type FontStyleId,
+} from "@/lib/font-style";
+import {
+  clampDisplayScale,
+  DEFAULT_DISPLAY_SCALE,
+  describeDisplayScale,
+  DISPLAY_SCALE_STEP,
+  loadDisplayScale,
+  MAX_DISPLAY_SCALE,
+  MIN_DISPLAY_SCALE,
+  saveDisplayScale,
+} from "@/lib/display-scale";
 import {
   getNotificationStatus,
   loadNotificationPreferences,
@@ -29,6 +62,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
   loadBounceAnimationEnabled,
@@ -132,6 +166,9 @@ export default function Settings() {
   const [transitionError, setTransitionError] = useState<string | null>(null);
   const [uiStyle, setUiStyle] = useState<UiStyle>(() => loadUiStyle());
   const [uiStyleError, setUiStyleError] = useState<string | null>(null);
+  const [appliedDisplayScale, setAppliedDisplayScale] = useState<number>(() => loadDisplayScale());
+  const [pendingDisplayScale, setPendingDisplayScale] = useState<number>(() => loadDisplayScale());
+  const [fontStyle, setFontStyle] = useState<FontStyleId>(() => loadFontStyle());
   const [bounceEnabled, setBounceEnabled] = useState<boolean>(() =>
     loadBounceAnimationEnabled(),
   );
@@ -233,16 +270,23 @@ export default function Settings() {
     setClearingCache(true);
     try {
       const beforeBytes = cacheInfo?.totalBytes ?? 0;
-      const { freedBytes } = await clearTemporaryCache();
+      const { freedBytes, clearedHistoryCount } = await clearTemporaryCache();
       const updated = await inspectCacheStorage();
       setCacheInfo(updated);
       const effectiveFreed = Math.max(freedBytes, Math.max(0, beforeBytes - updated.totalBytes));
+      const didClear = effectiveFreed > 0 || clearedHistoryCount > 0;
+      const details: string[] = [];
+      if (effectiveFreed > 0) details.push(`freed ${formatStorageBytes(effectiveFreed)}`);
+      if (clearedHistoryCount > 0) {
+        details.push(
+          `cleared ${clearedHistoryCount} history item${clearedHistoryCount === 1 ? "" : "s"}`,
+        );
+      }
       toast({
-        title: effectiveFreed > 0 ? "Temporary cache cleared" : "Cache is already clean",
-        description:
-          effectiveFreed > 0
-            ? `Freed ${formatStorageBytes(effectiveFreed)} without touching your saved downloads.`
-            : "No temporary files needed to be removed.",
+        title: didClear ? "Cache & history cleared" : "Cache is already clean",
+        description: didClear
+          ? `Successfully ${details.join(" and ")} without touching your saved videos or photos.`
+          : "No temporary files or download history needed to be removed.",
       });
     } catch (error) {
       toast({
@@ -304,6 +348,38 @@ export default function Settings() {
       console.error("Could not save the UI style.", error);
       setUiStyleError("Could not save this UI style. Check that storage is available and try again.");
     }
+  };
+
+  const handleApplyDisplayScale = () => {
+    const saved = saveDisplayScale(pendingDisplayScale);
+    setAppliedDisplayScale(saved);
+    setPendingDisplayScale(saved);
+    toast({
+      title: `Display size set to ${saved}%`,
+      description:
+        saved === DEFAULT_DISPLAY_SCALE
+          ? "Restored standard layout sizing across HutaoTik."
+          : `Layout scaled to ${saved}% (${describeDisplayScale(saved)}) for this device.`,
+    });
+  };
+
+  const handleResetDisplayScale = () => {
+    const saved = saveDisplayScale(DEFAULT_DISPLAY_SCALE);
+    setAppliedDisplayScale(saved);
+    setPendingDisplayScale(saved);
+    toast({
+      title: "Display size reset to 100%",
+      description: "Restored default display sizing across HutaoTik.",
+    });
+  };
+
+  const handleSelectFontStyle = (nextFont: FontStyleId) => {
+    const preset = saveFontStyle(nextFont);
+    setFontStyle(preset.id);
+    toast({
+      title: `Font changed to ${preset.name}`,
+      description: preset.tagline,
+    });
   };
 
   const updateBounceAnimation = (enabled: boolean) => {
@@ -440,7 +516,231 @@ export default function Settings() {
       </header>
 
       <div className="space-y-3">
-      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "0ms" }}>
+      <details open className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "0ms" }}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <span>
+            <span className="flex flex-wrap items-center gap-2 text-base font-semibold text-card-foreground">
+              <MonitorSmartphone className="h-4 w-4 text-primary" />
+              Display Size
+              <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary">
+                {appliedDisplayScale}%
+              </span>
+            </span>
+            <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
+              Shrink or adjust the app layout to fit smaller or zoomed-in device screens.
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
+        </summary>
+        <div className="space-y-3 pb-4">
+          {/* Live proportional preview box so dragging the slider does not shift controls mid-drag */}
+          <div className="rounded-xl border border-border bg-background p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-base font-extrabold text-foreground">
+                  {pendingDisplayScale}%
+                </span>
+                <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                  {describeDisplayScale(pendingDisplayScale)}
+                </span>
+              </div>
+              {pendingDisplayScale !== appliedDisplayScale ? (
+                <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                  Preview · Tap Apply
+                </span>
+              ) : (
+                <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-400">
+                  Active
+                </span>
+              )}
+            </div>
+
+            <div
+              className="rounded-lg border border-border/70 bg-card/60 p-2.5 overflow-hidden"
+              style={{ fontSize: `${(16 * pendingDisplayScale) / 100}px` }}
+            >
+              <div className="flex items-center justify-between gap-[0.5em]">
+                <span className="font-syne font-bold text-foreground" style={{ fontSize: "0.95em" }}>
+                  Hutao<span className="text-primary">Tik</span>
+                </span>
+                <div className="flex items-center gap-[0.3em]">
+                  <span
+                    className="rounded-md border border-border bg-background/80 px-[0.5em] py-[0.2em] font-semibold text-foreground"
+                    style={{ fontSize: "0.68em" }}
+                  >
+                    History
+                  </span>
+                  <span
+                    className="rounded-md border border-primary/40 bg-primary/15 px-[0.5em] py-[0.2em] font-semibold text-primary"
+                    style={{ fontSize: "0.68em" }}
+                  >
+                    Settings
+                  </span>
+                </div>
+              </div>
+              <p className="mt-[0.45em] text-muted-foreground" style={{ fontSize: "0.75em", lineHeight: 1.35 }}>
+                Sample layout text and buttons at {pendingDisplayScale}% display scale.
+              </p>
+            </div>
+          </div>
+
+          {/* Slider + minus/plus step buttons */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                aria-label="Decrease display size"
+                disabled={pendingDisplayScale <= MIN_DISPLAY_SCALE}
+                onClick={() =>
+                  setPendingDisplayScale((current) =>
+                    clampDisplayScale(current - DISPLAY_SCALE_STEP),
+                  )
+                }
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-40"
+              >
+                <Minus className="h-3.5 w-3.5" />
+              </button>
+              <Slider
+                aria-label="Display size slider"
+                min={MIN_DISPLAY_SCALE}
+                max={MAX_DISPLAY_SCALE}
+                step={DISPLAY_SCALE_STEP}
+                value={[pendingDisplayScale]}
+                onValueChange={(values) => {
+                  const next = values[0];
+                  if (typeof next === "number") {
+                    setPendingDisplayScale(clampDisplayScale(next));
+                  }
+                }}
+                className="flex-1 py-2"
+              />
+              <button
+                type="button"
+                aria-label="Increase display size"
+                disabled={pendingDisplayScale >= MAX_DISPLAY_SCALE}
+                onClick={() =>
+                  setPendingDisplayScale((current) =>
+                    clampDisplayScale(current + DISPLAY_SCALE_STEP),
+                  )
+                }
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-1 px-1">
+              {[65, 75, 85, 100, 110].map((mark) => (
+                <button
+                  key={mark}
+                  type="button"
+                  onClick={() => setPendingDisplayScale(mark)}
+                  className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold transition-colors ${
+                    pendingDisplayScale === mark
+                      ? "bg-primary/20 text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {mark}%
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Apply + Reset buttons */}
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <button
+              type="button"
+              data-testid="apply-display-scale"
+              onClick={handleApplyDisplayScale}
+              disabled={pendingDisplayScale === appliedDisplayScale}
+              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 text-xs font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Check className="h-4 w-4" />
+              {pendingDisplayScale === appliedDisplayScale
+                ? `Applied (${appliedDisplayScale}%)`
+                : `Apply Display Size (${pendingDisplayScale}%)`}
+            </button>
+            {(appliedDisplayScale !== DEFAULT_DISPLAY_SCALE ||
+              pendingDisplayScale !== DEFAULT_DISPLAY_SCALE) && (
+              <button
+                type="button"
+                onClick={handleResetDisplayScale}
+                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset 100%
+              </button>
+            )}
+          </div>
+        </div>
+      </details>
+
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "30ms" }}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <span>
+            <span className="flex flex-wrap items-center gap-2 text-base font-semibold text-card-foreground">
+              <Type className="h-4 w-4 text-primary" />
+              Font Style
+              <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">
+                {getFontStylePreset(fontStyle).name}
+              </span>
+            </span>
+            <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
+              Switch between multiple modern font pairings across the entire app.
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
+        </summary>
+        <div className="space-y-2.5 pb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {FONT_STYLE_PRESETS.map((preset) => {
+              const selected = fontStyle === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  data-testid={`font-option-${preset.id}`}
+                  onClick={() => handleSelectFontStyle(preset.id)}
+                  className={`group flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-all ${
+                    selected
+                      ? "border-primary bg-primary/12 shadow-[0_6px_18px_-6px_hsl(var(--primary)/0.45)]"
+                      : "border-border bg-background hover:border-primary/45 hover:bg-card/80"
+                  }`}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span
+                      className="text-sm font-bold text-foreground leading-tight"
+                      style={{ fontFamily: preset.display }}
+                    >
+                      {preset.name}
+                    </span>
+                    {selected && (
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                        <Check className="h-3 w-3" />
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    className="text-xs font-medium text-foreground/80"
+                    style={{ fontFamily: preset.display }}
+                  >
+                    Download anything.
+                  </span>
+                  <span
+                    className="text-[11px] leading-snug text-muted-foreground"
+                    style={{ fontFamily: preset.sans }}
+                  >
+                    {preset.tagline}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </details>
+
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "50ms" }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span>
             <span className="block text-base font-semibold text-card-foreground">Themes</span>
@@ -512,7 +812,7 @@ export default function Settings() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="normal">Normal</SelectItem>
-            <SelectItem value="liquid-glass">Liquid Glass</SelectItem>
+            <SelectItem value="liquid-glass">Liquid Glass — iPhone frosted crystal</SelectItem>
             <SelectItem value="soft-glow">Soft Glow</SelectItem>
             <SelectItem value="minimal">Minimal</SelectItem>
           </SelectContent>
@@ -819,7 +1119,7 @@ export default function Settings() {
               )}
             </span>
             <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
-              Inspect and clear temporary TaoCompress, download, and update cache files.
+              Inspect and clear temporary cache files and saved download history.
             </span>
           </span>
           <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
@@ -828,16 +1128,19 @@ export default function Settings() {
           <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background p-3">
             <div className="min-w-0">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Temporary Cache Size
+                Cache &amp; History Size
               </p>
               <p className="mt-0.5 font-mono text-lg font-extrabold text-foreground">
                 {loadingCache && !cacheInfo
                   ? "Scanning…"
                   : formatStorageBytes(cacheInfo?.totalBytes ?? 0)}
               </p>
-              {cacheInfo?.isNative && (
+              {cacheInfo && (
                 <p className="text-[11px] text-muted-foreground">
-                  {cacheInfo.fileCount} temporary file{cacheInfo.fileCount === 1 ? "" : "s"}
+                  {cacheInfo.isNative
+                    ? `${cacheInfo.fileCount} temp file${cacheInfo.fileCount === 1 ? "" : "s"} · `
+                    : ""}
+                  {cacheInfo.historyCount} history item{cacheInfo.historyCount === 1 ? "" : "s"}
                 </p>
               )}
             </div>
@@ -852,8 +1155,8 @@ export default function Settings() {
             </button>
           </div>
 
-          {cacheInfo?.isNative && (
-            <div className="grid grid-cols-3 gap-2">
+          {cacheInfo && (
+            <div className="grid grid-cols-2 gap-2">
               <div className="rounded-xl border border-border bg-background/70 p-2.5">
                 <p className="text-[10px] font-semibold text-muted-foreground">TaoCompress</p>
                 <p className="mt-0.5 font-mono text-xs font-bold text-foreground">
@@ -872,28 +1175,41 @@ export default function Settings() {
                   {formatStorageBytes(cacheInfo.breakdown.updateApks)}
                 </p>
               </div>
+              <div className="rounded-xl border border-border bg-background/70 p-2.5">
+                <p className="text-[10px] font-semibold text-muted-foreground">Download History</p>
+                <p className="mt-0.5 font-mono text-xs font-bold text-foreground">
+                  {cacheInfo.historyCount} item{cacheInfo.historyCount === 1 ? "" : "s"} (
+                  {formatStorageBytes(cacheInfo.breakdown.historyBytes)})
+                </p>
+              </div>
             </div>
           )}
 
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Only temporary working files are removed. Your saved videos, photos, settings, and built-in downloader tools stay untouched.
+            Clears temporary working files and your Download History list. Your saved videos, photos, preferences, and built-in downloader tools stay untouched.
           </p>
 
           <button
             type="button"
             onClick={() => void handleClearCache()}
-            disabled={clearingCache || (cacheInfo !== null && cacheInfo.totalBytes === 0 && cacheInfo.fileCount === 0)}
+            disabled={
+              clearingCache ||
+              (cacheInfo !== null &&
+                cacheInfo.totalBytes === 0 &&
+                cacheInfo.fileCount === 0 &&
+                cacheInfo.historyCount === 0)
+            }
             className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 text-xs font-bold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {clearingCache ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Clearing Temporary Cache…
+                Clearing Cache &amp; History…
               </>
             ) : (
               <>
                 <Trash2 className="h-4 w-4" />
-                Clear Temporary Cache
+                Clear Cache &amp; Download History
               </>
             )}
           </button>

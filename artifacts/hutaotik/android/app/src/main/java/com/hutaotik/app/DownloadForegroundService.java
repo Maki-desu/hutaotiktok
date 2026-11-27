@@ -214,10 +214,15 @@ public class DownloadForegroundService extends Service {
                 work.run(task);
             } catch (CancellationException ignored) {
                 task.markCancelledSilently();
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 Log.e(TAG, "Background task failed: " + taskId, e);
-                task.markFailed(e.getMessage());
-                if (onErrorFallback != null) onErrorFallback.run();
+                task.markFailed(e.getMessage() != null ? e.getMessage() : "Download failed on device.");
+                if (onErrorFallback != null) {
+                    try {
+                        onErrorFallback.run();
+                    } catch (Throwable ignored) {
+                    }
+                }
             } finally {
                 task.workerThread = null;
                 if (ACTIVE_TASKS.remove(taskId) != null) {
@@ -353,7 +358,7 @@ public class DownloadForegroundService extends Service {
         intent.setAction(ACTION_SYNC_FOREGROUND);
         try {
             ContextCompat.startForegroundService(appContext, intent);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.w(TAG, "Could not promote foreground service; falling back to standard notification.", e);
             refreshNotifications(appContext);
         }
@@ -363,7 +368,7 @@ public class DownloadForegroundService extends Service {
         if (notifId != FOREGROUND_NOTIF_ID) {
             try {
                 NotificationManagerCompat.from(appContext).cancel(notifId);
-            } catch (Exception ignored) {
+            } catch (Throwable ignored) {
             }
         }
     }
@@ -380,22 +385,22 @@ public class DownloadForegroundService extends Service {
             !HutaoNotificationHelper.hasNotificationPermission(appContext)) {
             return;
         }
-        TaskContext primary = ACTIVE_TASKS.values().iterator().next();
-        Notification notif = HutaoNotificationHelper.buildDownloadProgressNotification(
-            appContext,
-            primary.taskId,
-            primary.title,
-            primary.lastPercent,
-            primary.lastLoadedBytes,
-            primary.lastTotalBytes,
-            primary.lastEtaSeconds,
-            primary.lastStatus,
-            ACTIVE_TASKS.size(),
-            primary.cancellable
-        );
         try {
+            TaskContext primary = ACTIVE_TASKS.values().iterator().next();
+            Notification notif = HutaoNotificationHelper.buildDownloadProgressNotification(
+                appContext,
+                primary.taskId,
+                primary.title,
+                primary.lastPercent,
+                primary.lastLoadedBytes,
+                primary.lastTotalBytes,
+                primary.lastEtaSeconds,
+                primary.lastStatus,
+                ACTIVE_TASKS.size(),
+                primary.cancellable
+            );
             NotificationManagerCompat.from(appContext).notify(FOREGROUND_NOTIF_ID, notif);
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
     }
 
@@ -446,9 +451,9 @@ public class DownloadForegroundService extends Service {
                 false
             );
 
-        startForegroundCompat(FOREGROUND_NOTIF_ID, fgNotification);
+        boolean promoted = startForegroundCompat(FOREGROUND_NOTIF_ID, fgNotification);
 
-        if (ACTIVE_TASKS.isEmpty()) {
+        if (!promoted || ACTIVE_TASKS.isEmpty()) {
             stopForegroundCompat();
             stopSelf();
         } else {
@@ -468,7 +473,7 @@ public class DownloadForegroundService extends Service {
         }
         try {
             YoutubeDL.getInstance().destroyProcessById(taskId);
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
         }
         task.markCancelledSilently();
     }
@@ -480,21 +485,21 @@ public class DownloadForegroundService extends Service {
             stopSelf();
             return;
         }
-        Notification fgNotification = HutaoNotificationHelper.buildDownloadProgressNotification(
-            this,
-            primary.taskId,
-            primary.title,
-            primary.lastPercent,
-            primary.lastLoadedBytes,
-            primary.lastTotalBytes,
-            primary.lastEtaSeconds,
-            primary.lastStatus,
-            ACTIVE_TASKS.size(),
-            primary.cancellable
-        );
         try {
+            Notification fgNotification = HutaoNotificationHelper.buildDownloadProgressNotification(
+                this,
+                primary.taskId,
+                primary.title,
+                primary.lastPercent,
+                primary.lastLoadedBytes,
+                primary.lastTotalBytes,
+                primary.lastEtaSeconds,
+                primary.lastStatus,
+                ACTIVE_TASKS.size(),
+                primary.cancellable
+            );
             NotificationManagerCompat.from(this).notify(FOREGROUND_NOTIF_ID, fgNotification);
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
         notifySecondaryTasks(primary);
     }
@@ -508,21 +513,21 @@ public class DownloadForegroundService extends Service {
         for (Map.Entry<String, TaskContext> entry : ACTIVE_TASKS.entrySet()) {
             TaskContext task = entry.getValue();
             if (task == primary) continue;
-            Notification notif = HutaoNotificationHelper.buildDownloadProgressNotification(
-                this,
-                task.taskId,
-                task.title,
-                task.lastPercent,
-                task.lastLoadedBytes,
-                task.lastTotalBytes,
-                task.lastEtaSeconds,
-                task.lastStatus,
-                count,
-                task.cancellable
-            );
             try {
+                Notification notif = HutaoNotificationHelper.buildDownloadProgressNotification(
+                    this,
+                    task.taskId,
+                    task.title,
+                    task.lastPercent,
+                    task.lastLoadedBytes,
+                    task.lastTotalBytes,
+                    task.lastEtaSeconds,
+                    task.lastStatus,
+                    count,
+                    task.cancellable
+                );
                 NotificationManagerCompat.from(this).notify(task.notificationId, notif);
-            } catch (SecurityException ignored) {
+            } catch (Throwable ignored) {
             }
         }
     }
@@ -532,20 +537,43 @@ public class DownloadForegroundService extends Service {
         return it.hasNext() ? it.next() : null;
     }
 
-    private void startForegroundCompat(int id, Notification notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        } else {
-            startForeground(id, notification);
+    private boolean startForegroundCompat(int id, Notification notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(id, notification);
+            }
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "Foreground service promotion blocked on this device; continuing safely.", t);
+            return false;
         }
     }
 
     private void stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } else {
+                stopForeground(true);
+            }
+        } catch (Throwable ignored) {
         }
+    }
+
+    @Override
+    public void onTimeout(int startId) {
+        Log.w(TAG, "DownloadForegroundService reached system timeout; stopping cleanly.");
+        stopForegroundCompat();
+        stopSelf(startId);
+    }
+
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        Log.w(TAG, "DownloadForegroundService reached FGS timeout (" + fgsType + "); stopping cleanly.");
+        stopForegroundCompat();
+        stopSelf(startId);
     }
 
     @Override

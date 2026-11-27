@@ -4,6 +4,7 @@ import {
   isDirectApkInstallUrl,
   isUpdateNewer,
   registerAppUpdateProgressListener,
+  startAppUpdateInstall,
   type AppUpdateProgressEvent,
 } from "./app-updates";
 
@@ -73,6 +74,47 @@ describe("app-updates client utilities", () => {
         loadedBytes: 42_000_000,
         totalBytes: 100_000_000,
         message: undefined,
+      },
+    ]);
+  });
+
+  it("invokes AndroidStorageBridge.installAppUpdate bound to its receiver (no Illegal invocation)", () => {
+    const calls: Array<{ url: string; sha256: string }> = [];
+    const bridge = {
+      installAppUpdate(this: unknown, url: string, sha256: string) {
+        if (this !== bridge) {
+          throw new TypeError("Illegal invocation");
+        }
+        calls.push({ url, sha256 });
+        return "started";
+      },
+    };
+    vi.stubGlobal("window", {
+      AndroidStorageBridge: bridge,
+      location: { origin: "https://hutaotiktok-mja6.onrender.com" },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const outcome = startAppUpdateInstall({
+      id: 12,
+      versionCode: 38,
+      versionName: "1.2.22",
+      title: "Update",
+      changelog: "Fixes",
+      downloadUrl: "https://hutaotiktok-mja6.onrender.com/api/app-updates/12/download",
+      fileSize: 98_000_000,
+      sha256: "a".repeat(64),
+      isMandatory: false,
+      minSupportedVersionCode: null,
+      downloadCount: 0,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(outcome).toBe("started");
+    expect(calls).toEqual([
+      {
+        url: "https://hutaotiktok-mja6.onrender.com/api/app-updates/12/download",
+        sha256: "a".repeat(64),
       },
     ]);
   });

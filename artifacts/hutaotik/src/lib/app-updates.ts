@@ -27,6 +27,7 @@ export interface AppUpdateProgressEvent {
 
 interface NativeUpdateBridge {
   installAppUpdate?(url: string, sha256: string): string;
+  openExternalUrl?(url: string): boolean;
   getDeviceInfo?(): string;
 }
 
@@ -43,9 +44,9 @@ const CHECKIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const progressListeners = new Set<(event: AppUpdateProgressEvent) => void>();
 
 export function getInstalledAppVersion(): { versionCode: number; versionName: string } {
-  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "36", 10);
-  const versionCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 36;
-  const versionName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.20").trim() || "1.2.20";
+  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "40", 10);
+  const versionCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 40;
+  const versionName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.24").trim() || "1.2.24";
   return { versionCode, versionName };
 }
 
@@ -108,10 +109,15 @@ export function isDirectApkInstallUrl(downloadUrl: string, baseOverride?: string
       return false;
     }
     const serviceBase = baseOverride ?? apiUrl("/");
-    const hasHttpsServiceBase = /^https:\/\//i.test(serviceBase);
+    const effectiveBase =
+      serviceBase && /^https:\/\//i.test(serviceBase)
+        ? serviceBase
+        : typeof window !== "undefined" && /^https:\/\//i.test(window.location?.origin ?? "")
+          ? window.location.origin + "/"
+          : "";
     const isServiceDownload =
-      hasHttpsServiceBase &&
-      releaseUrl.origin === new URL(serviceBase).origin &&
+      effectiveBase.length > 0 &&
+      releaseUrl.origin === new URL(effectiveBase).origin &&
       /^\/api\/app-updates\/\d+\/download$/.test(releaseUrl.pathname);
     const isDirectApk = releaseUrl.pathname.toLowerCase().endsWith(".apk");
     return isServiceDownload || isDirectApk;
@@ -309,21 +315,60 @@ export function toDownloadProgressState(event: AppUpdateProgressEvent): Download
   };
 }
 
+export function openReleaseDownloadInBrowser(
+  downloadUrl: string,
+  baseOverride?: string,
+): void {
+  const resolvedUrl = resolveReleaseDownloadUrl(downloadUrl, baseOverride).toString();
+  const storageBridge = getNativeUpdateBridge();
+  if (storageBridge?.openExternalUrl) {
+    try {
+      if (storageBridge.openExternalUrl(resolvedUrl)) return;
+    } catch {
+      /* fallback */
+    }
+  }
+  const adminBridge =
+    typeof window !== "undefined"
+      ? (window as Window & { AndroidAdminBridge?: { openExternalUrl?: (u: string) => boolean } })
+          .AndroidAdminBridge
+      : undefined;
+  if (adminBridge?.openExternalUrl) {
+    try {
+      if (adminBridge.openExternalUrl(resolvedUrl)) return;
+    } catch {
+      /* fallback */
+    }
+  }
+  const opened = window.open(resolvedUrl, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    window.location.href = resolvedUrl;
+  }
+}
+
 export function startAppUpdateInstall(
   release: AvailableRelease,
 ): "started" | "opened_browser" | "permission_required" | "failed" {
   const downloadUrl = resolveReleaseDownloadUrl(release.downloadUrl).toString();
   trackReleaseDownload(release.id);
 
-  const nativeInstall = getNativeUpdateBridge()?.installAppUpdate;
-  if (Capacitor.isNativePlatform() && nativeInstall && isDirectApkInstallUrl(downloadUrl)) {
-    const result = nativeInstall(downloadUrl, release.sha256 ?? "");
-    if (result === "started" || result === "permission_required") {
-      return result;
+  const bridge = getNativeUpdateBridge();
+  if (
+    typeof bridge?.installAppUpdate === "function" &&
+    isDirectApkInstallUrl(downloadUrl)
+  ) {
+    try {
+      const result = bridge.installAppUpdate(downloadUrl, release.sha256 ?? "");
+      if (result === "started" || result === "permission_required") {
+        return result;
+      }
+      return "failed";
+    } catch (error) {
+      console.error("Native APK update install failed:", error);
+      return "failed";
     }
-    return "failed";
   }
 
-  window.open(downloadUrl, "_blank", "noopener,noreferrer");
+  openReleaseDownloadInBrowser(downloadUrl);
   return "opened_browser";
 }

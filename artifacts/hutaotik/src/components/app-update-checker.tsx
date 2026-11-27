@@ -8,8 +8,8 @@ import {
   getInstalledAppVersion,
   isDirectApkInstallUrl,
   isUpdateNewer,
+  openReleaseDownloadInBrowser,
   registerAppUpdateProgressListener,
-  resolveReleaseDownloadUrl,
   sendDeviceCheckIn,
   startAppUpdateInstall,
   toDownloadProgressState,
@@ -177,27 +177,32 @@ export function AppUpdateChecker() {
   const startInstall = () => {
     if (!release) return;
     setInstallError(null);
-    const directApk = isDirectApkInstallUrl(release.downloadUrl);
-    const outcome = startAppUpdateInstall(release);
-
-    if (outcome === "started" && directApk) {
-      setDownloading(true);
-      setProgressEvent({ status: "downloading", percent: 2, message: "Starting APK download…" });
-      return;
-    }
-    if (outcome === "permission_required") {
-      setInstallError("Allow HutaoTik to install unknown apps in Android settings, then tap Update again.");
-      return;
-    }
-    if (outcome === "failed") {
-      setInstallError("The APK download could not be started. Try opening the link in your browser.");
+    try {
+      const outcome = startAppUpdateInstall(release);
+      if (outcome === "started") {
+        setDownloading(true);
+        setProgressEvent({ status: "downloading", percent: 2, message: "Starting APK download…" });
+        return;
+      }
+      if (outcome === "permission_required") {
+        setInstallError("Allow HutaoTik to install unknown apps in Android settings, then tap Update again.");
+        return;
+      }
+      if (outcome === "failed") {
+        setInstallError("The APK download could not be started. Try opening the link in your browser.");
+      }
+    } catch (cause) {
+      setInstallError(
+        cause instanceof Error
+          ? cause.message
+          : "The APK download could not be started. Try opening the link in your browser.",
+      );
     }
   };
 
   const openInBrowser = () => {
     if (!release) return;
-    const downloadUrl = resolveReleaseDownloadUrl(release.downloadUrl).toString();
-    window.open(downloadUrl, "_blank", "noopener,noreferrer");
+    openReleaseDownloadInBrowser(release.downloadUrl);
   };
 
   const isMandatory = release?.isMandatory === true;

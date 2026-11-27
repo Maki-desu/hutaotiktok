@@ -25,7 +25,12 @@ function isHexColor(value: unknown): value is string {
 }
 
 export function loadThemeCustomization(): ThemeCustomization | null {
-  const stored = localStorage.getItem(STORAGE_KEY);
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
   if (!stored) return null;
 
   try {

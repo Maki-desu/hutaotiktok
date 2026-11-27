@@ -11,16 +11,45 @@ export interface LocalHistoryRecord {
   downloadedAt: string;
 }
 
+export const LOCAL_HISTORY_KEY = "hutaotik_local_history";
+const HISTORY_CHANGED_EVENT = "hutaotik:history-changed";
+
+function notifyHistoryChanged(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(HISTORY_CHANGED_EVENT));
+  }
+}
+
+export function onLocalHistoryChanged(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(HISTORY_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(HISTORY_CHANGED_EVENT, listener);
+}
+
 export function getLocalHistory(): LocalHistoryRecord[] {
   try {
-    const raw = localStorage.getItem("hutaotik_local_history");
-    return raw ? JSON.parse(raw) : [];
+    const raw = localStorage.getItem(LOCAL_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as LocalHistoryRecord[]) : [];
   } catch {
     return [];
   }
 }
 
-export function saveLocalHistoryRecord(record: Omit<LocalHistoryRecord, "id" | "downloadedAt">): LocalHistoryRecord {
+export function getLocalHistoryBytes(): number {
+  try {
+    const raw = localStorage.getItem(LOCAL_HISTORY_KEY);
+    if (!raw) return 0;
+    return typeof TextEncoder !== "undefined" ? new TextEncoder().encode(raw).length : raw.length * 2;
+  } catch {
+    return 0;
+  }
+}
+
+export function saveLocalHistoryRecord(
+  record: Omit<LocalHistoryRecord, "id" | "downloadedAt">,
+): LocalHistoryRecord {
   const history = getLocalHistory();
   const newRecord: LocalHistoryRecord = {
     ...record,
@@ -28,16 +57,17 @@ export function saveLocalHistoryRecord(record: Omit<LocalHistoryRecord, "id" | "
     downloadedAt: new Date().toISOString(),
   };
 
-  // Prepend new record & filter duplicates
+  // Prepend new record & deduplicate by sourceUrl + quality
   const updated = [
     newRecord,
     ...history.filter(
-      (r) => !(r.sourceUrl === record.sourceUrl && r.quality === record.quality)
+      (r) => !(r.sourceUrl === record.sourceUrl && r.quality === record.quality),
     ),
   ].slice(0, 100);
 
   try {
-    localStorage.setItem("hutaotik_local_history", JSON.stringify(updated));
+    localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updated));
+    notifyHistoryChanged();
   } catch {
     /* ignore storage full */
   }
@@ -45,6 +75,26 @@ export function saveLocalHistoryRecord(record: Omit<LocalHistoryRecord, "id" | "
   return newRecord;
 }
 
+export function removeLocalHistoryRecord(id: string): LocalHistoryRecord[] {
+  const updated = getLocalHistory().filter((r) => r.id !== id);
+  try {
+    if (updated.length === 0) {
+      localStorage.removeItem(LOCAL_HISTORY_KEY);
+    } else {
+      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updated));
+    }
+    notifyHistoryChanged();
+  } catch {
+    /* ignore */
+  }
+  return updated;
+}
+
 export function clearLocalHistory(): void {
-  localStorage.removeItem("hutaotik_local_history");
+  try {
+    localStorage.removeItem(LOCAL_HISTORY_KEY);
+    notifyHistoryChanged();
+  } catch {
+    /* ignore */
+  }
 }

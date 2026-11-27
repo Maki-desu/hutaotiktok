@@ -125,15 +125,27 @@ export async function ensureStoragePermissions(): Promise<boolean> {
 }
 
 export function getStoredFolderName(): string | null {
-  return localStorage.getItem("hutaotik_download_folder_name");
+  try {
+    return localStorage.getItem("hutaotik_download_folder_name");
+  } catch {
+    return null;
+  }
 }
 
 export function setStoredFolderName(name: string): void {
-  localStorage.setItem("hutaotik_download_folder_name", name);
+  try {
+    localStorage.setItem("hutaotik_download_folder_name", name);
+  } catch {
+    /* ignore storage write errors */
+  }
 }
 
 export function clearStoredFolderName(): void {
-  localStorage.removeItem("hutaotik_download_folder_name");
+  try {
+    localStorage.removeItem("hutaotik_download_folder_name");
+  } catch {
+    /* ignore */
+  }
   currentDirHandle = null;
 }
 

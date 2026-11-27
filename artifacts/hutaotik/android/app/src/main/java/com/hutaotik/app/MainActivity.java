@@ -21,13 +21,17 @@ import android.provider.MediaStore;
 import android.widget.Toast;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.core.content.FileProvider;
+import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.WebViewListener;
 import com.yausername.ffmpeg.FFmpeg;
 import com.yausername.youtubedl_android.YoutubeDL;
 import com.yausername.youtubedl_android.YoutubeDLException;
@@ -44,8 +48,11 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -55,9 +62,13 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -69,6 +80,14 @@ public class MainActivity extends BridgeActivity {
     private static final String FACEBOOK_FOLDER_PREF = "facebook_download_folder_uri";
     private static final AtomicReference<String> pendingSharedText = new AtomicReference<>();
     private static final AtomicReference<String> pendingNotificationRoute = new AtomicReference<>();
+    private static final ExecutorService NATIVE_TOOLS_INIT_EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final AtomicBoolean NATIVE_TOOLS_INIT_STARTED = new AtomicBoolean(false);
+    private static final CountDownLatch YTDLP_INIT_LATCH = new CountDownLatch(1);
+    private static final CountDownLatch FFMPEG_INIT_LATCH = new CountDownLatch(1);
+    private static final AtomicLong LAST_RENDER_RECOVERY_AT = new AtomicLong(0L);
+    private static final AtomicInteger RENDER_RECOVERY_COUNT = new AtomicInteger(0);
+    private static volatile String sharedYoutubeInitError;
+    private static volatile String sharedFfmpegInitError;
     private static volatile MainActivity activeInstance;
     private final Map<String, File> pendingBlobFiles = new ConcurrentHashMap<>();
     private final Map<String, File> compressedVideoFiles = new ConcurrentHashMap<>();
@@ -81,37 +100,138 @@ public class MainActivity extends BridgeActivity {
     private final Object ytDlpUpdateLock = new Object();
     private volatile BroadcastReceiver activeUpdateReceiver;
     private volatile AtomicBoolean activeUpdatePollCancelled;
-    private volatile String facebookInitError;
-    private volatile String facebookFfmpegInitError;
-    private volatile String youtubeInitError;
     private volatile boolean youtubeUpdateChecked;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         activeInstance = this;
-        HutaoNotificationHelper.ensureChannels(this);
-        NotificationSyncJobService.schedule(this);
+        try {
+            HutaoNotificationHelper.ensureChannels(this);
+        } catch (Throwable t) {
+            Log.w(TAG, "Notification channel initialization failed safely.", t);
+        }
+        try {
+            NotificationSyncJobService.schedule(this);
+        } catch (Throwable t) {
+            Log.w(TAG, "Background notification job scheduling failed safely.", t);
+        }
         DownloadForegroundService.setProgressRelay((taskId, percent, loaded, total, eta, status) -> {
             MainActivity act = activeInstance;
             if (act != null) {
                 act.emitWebViewDownloadProgress(taskId, percent, loaded, total, eta, status);
             }
         });
-        getBridge().getWebView().addJavascriptInterface(new WebAppInterface(), "AndroidStorageBridge");
-        try {
-            YoutubeDL.getInstance().init(getApplicationContext());
-        } catch (Exception e) {
-            youtubeInitError = e.getMessage();
-            facebookInitError = e.getMessage();
+
+        Bridge capBridge = getBridge();
+        WebView webView = capBridge != null ? capBridge.getWebView() : null;
+        if (webView != null) {
+            try {
+                WebSettings settings = webView.getSettings();
+                if (settings != null) {
+                    settings.setTextZoom(100);
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                webView.addJavascriptInterface(new WebAppInterface(), "AndroidStorageBridge");
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to attach AndroidStorageBridge.", t);
+            }
         }
-        try {
-            FFmpeg.getInstance().init(getApplicationContext());
-        } catch (Exception e) {
-            facebookFfmpegInitError = e.getMessage();
+
+        if (capBridge != null) {
+            capBridge.addWebViewListener(new WebViewListener() {
+                @Override
+                public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                    boolean didCrash = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && detail != null && detail.didCrash();
+                    Log.e(TAG, "WebView render process gone (didCrash=" + didCrash + "); attempting safe recovery.");
+                    long now = System.currentTimeMillis();
+                    if (now - LAST_RENDER_RECOVERY_AT.get() > 15_000L) {
+                        RENDER_RECOVERY_COUNT.set(0);
+                    }
+                    if (RENDER_RECOVERY_COUNT.incrementAndGet() <= 2) {
+                        LAST_RENDER_RECOVERY_AT.set(now);
+                        runOnUiThread(() -> {
+                            if (!isFinishing() && !isDestroyed()) {
+                                try {
+                                    recreate();
+                                } catch (Throwable recreateErr) {
+                                    Log.e(TAG, "Could not recreate MainActivity after WebView crash.", recreateErr);
+                                }
+                            }
+                        });
+                        return true;
+                    }
+                    return false;
+                }
+            });
         }
+
+        // Unpack yt-dlp / FFmpeg binaries off the UI thread so startup never ANRs or crashes on slower/incompatible devices
+        startNativeToolsInitAsync(getApplicationContext());
         handleSendIntent(getIntent());
         handleNotificationRouteIntent(getIntent());
+    }
+
+    private static void startNativeToolsInitAsync(Context appContext) {
+        if (!NATIVE_TOOLS_INIT_STARTED.compareAndSet(false, true)) return;
+        NATIVE_TOOLS_INIT_EXECUTOR.execute(() -> {
+            try {
+                YoutubeDL.getInstance().init(appContext);
+            } catch (Throwable t) {
+                Log.e(TAG, "YoutubeDL init failed safely.", t);
+                sharedYoutubeInitError = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            } finally {
+                YTDLP_INIT_LATCH.countDown();
+            }
+            try {
+                FFmpeg.getInstance().init(appContext);
+            } catch (Throwable t) {
+                Log.e(TAG, "FFmpeg init failed safely.", t);
+                sharedFfmpegInitError = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            } finally {
+                FFMPEG_INIT_LATCH.countDown();
+            }
+        });
+    }
+
+    private void awaitYoutubeDlInit() {
+        startNativeToolsInitAsync(getApplicationContext());
+        try {
+            if (!YTDLP_INIT_LATCH.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("On-device downloader is still preparing. Please try again in a moment.");
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Downloader setup was interrupted.");
+        }
+    }
+
+    private void awaitFfmpegInit() {
+        startNativeToolsInitAsync(getApplicationContext());
+        try {
+            if (!FFMPEG_INIT_LATCH.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("On-device FFmpeg is still preparing. Please try again in a moment.");
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("FFmpeg setup was interrupted.");
+        }
+    }
+
+    private void evalJsSafely(String script) {
+        MainActivity act = activeInstance != null ? activeInstance : this;
+        if (act == null || act.isFinishing() || act.isDestroyed()) return;
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
+        webView.post(() -> {
+            if (act.isFinishing() || act.isDestroyed()) return;
+            try {
+                webView.evaluateJavascript(script, null);
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     @Override
@@ -152,11 +272,9 @@ public class MainActivity extends BridgeActivity {
         } catch (JSONException e) {
             return;
         }
-        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
-        if (webView == null) return;
         String script = "window.onAppUpdateProgress && window.onAppUpdateProgress(" +
             JSONObject.quote(payload.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
     public class WebAppInterface {
@@ -172,146 +290,263 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean openExternalUrl(String rawUrl) {
+            if (rawUrl == null || (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://"))) {
+                return false;
+            }
+            try {
+                Intent viewIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(rawUrl.trim()));
+                viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        startActivity(viewIntent);
+                    } catch (Throwable err) {
+                        Log.e(TAG, "Could not launch external URL activity: " + rawUrl, err);
+                    }
+                });
+                return true;
+            } catch (Throwable e) {
+                Log.e(TAG, "Could not open external URL: " + rawUrl, e);
+                return false;
+            }
+        }
+
+        @JavascriptInterface
         public String installAppUpdate(String rawUrl, String expectedSha256) {
             if (rawUrl == null || !rawUrl.startsWith("https://") ||
                 expectedSha256 == null ||
                 (!expectedSha256.isEmpty() && !expectedSha256.matches("(?i)[0-9a-f]{64}"))) {
+                sendAppUpdateProgress("failed", 0, 0, 0, "Invalid update download URL.");
                 return "failed";
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 !getPackageManager().canRequestPackageInstalls()) {
                 runOnUiThread(() -> {
-                    Intent settingsIntent = new Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:" + getPackageName())
-                    );
-                    startActivity(settingsIntent);
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        Intent settingsIntent = new Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:" + getPackageName())
+                        );
+                        startActivity(settingsIntent);
+                    } catch (Throwable err) {
+                        Log.e(TAG, "Could not open unknown app sources settings.", err);
+                    }
                 });
                 sendAppUpdateProgress("permission_required", 0, 0, 0, "Allow installing unknown apps in Android settings.");
                 return "permission_required";
             }
 
-            File downloadDirectory = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            if (downloadDirectory == null) return "failed";
-            File apkFile = new File(downloadDirectory, "hutaotik-update.apk");
-            if (apkFile.exists() && !apkFile.delete()) return "failed";
-
-            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (manager == null) return "failed";
-
-            try {
-                unregisterActiveUpdateReceiver();
-                AtomicBoolean pollCancelled = new AtomicBoolean(false);
-                activeUpdatePollCancelled = pollCancelled;
-
-                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(rawUrl));
-                request.setTitle("Hutaotik update");
-                request.setDescription("Downloading the latest Hutaotik release");
-                request.setMimeType("application/vnd.android.package-archive");
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                request.setDestinationInExternalFilesDir(
-                    MainActivity.this,
-                    Environment.DIRECTORY_DOWNLOADS,
-                    apkFile.getName()
-                );
-                long downloadId = manager.enqueue(request);
-                sendAppUpdateProgress("downloading", 2, 0, 0, "Starting APK download…");
-
-                BroadcastReceiver receiver = new BroadcastReceiver() {
-                    @Override
-                    public void onReceive(Context context, Intent intent) {
-                        if (!DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction()) ||
-                            intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != downloadId) {
-                            return;
-                        }
-
-                        pollCancelled.set(true);
-                        unregisterActiveUpdateReceiver();
-                        updateExecutor.execute(() -> {
-                            try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(downloadId))) {
-                                if (cursor == null || !cursor.moveToFirst() ||
-                                    cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) !=
-                                        DownloadManager.STATUS_SUCCESSFUL) {
-                                    sendAppUpdateProgress("failed", 0, 0, 0, "Update APK download failed.");
-                                    showUpdateToast("Hutaotik update download failed.");
-                                    return;
-                                }
-                                if (!expectedSha256.isEmpty()) {
-                                    sendAppUpdateProgress("verifying", 97, apkFile.length(), apkFile.length(), "Verifying APK checksum…");
-                                    if (!expectedSha256.equalsIgnoreCase(calculateSha256(apkFile))) {
-                                        apkFile.delete();
-                                        sendAppUpdateProgress("failed", 0, 0, 0, "The downloaded APK failed its SHA-256 integrity check.");
-                                        showUpdateToast("The downloaded update failed its integrity check.");
-                                        return;
-                                    }
-                                }
-
-                                sendAppUpdateProgress("installing", 100, apkFile.length(), apkFile.length(), "Opening Android package installer…");
-                                Uri apkUri = FileProvider.getUriForFile(
-                                    MainActivity.this,
-                                    getPackageName() + ".fileprovider",
-                                    apkFile
-                                );
-                                Intent installIntent = new Intent(Intent.ACTION_VIEW);
-                                installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
-                                installIntent.addFlags(
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK
-                                );
-                                runOnUiThread(() -> startActivity(installIntent));
-                            } catch (Exception e) {
-                                sendAppUpdateProgress("failed", 0, 0, 0, "Could not open the installer: " + e.getMessage());
-                                showUpdateToast("Could not open the Hutaotik installer: " + e.getMessage());
-                            }
-                        });
-                    }
-                };
-                activeUpdateReceiver = receiver;
-                IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
-                } else {
-                    registerReceiver(receiver, filter);
-                }
-
-                // Poll DownloadManager progress so the user sees a live percentage inside HutaoTik
-                new Thread(() -> {
-                    while (!pollCancelled.get()) {
-                        try {
-                            Thread.sleep(350);
-                        } catch (InterruptedException e) {
-                            break;
-                        }
-                        if (pollCancelled.get()) break;
-                        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(downloadId))) {
-                            if (cursor == null || !cursor.moveToFirst()) break;
-                            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
-                            long downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
-                            long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
-                            if (status == DownloadManager.STATUS_RUNNING || status == DownloadManager.STATUS_PENDING) {
-                                int percent = total > 0
-                                    ? 2 + (int) Math.min(93, Math.round((downloaded * 93.0) / total))
-                                    : (downloaded > 0 ? 15 : 2);
-                                String stage = status == DownloadManager.STATUS_PENDING
-                                    ? "Connecting to download server…"
-                                    : "Downloading update APK…";
-                                sendAppUpdateProgress("downloading", percent, downloaded, total > 0 ? total : 0, stage);
-                            } else if (status == DownloadManager.STATUS_PAUSED) {
-                                sendAppUpdateProgress("downloading", total > 0 ? (int) Math.round((downloaded * 93.0) / total) : 5, downloaded, total > 0 ? total : 0, "Waiting for network…");
-                            } else if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
-                                break;
-                            }
-                        } catch (Exception ignored) {
-                            break;
-                        }
-                    }
-                }, "hutaotik-update-progress").start();
-
-                return "started";
-            } catch (RuntimeException e) {
-                sendAppUpdateProgress("failed", 0, 0, 0, "Could not start the update download.");
+            Context appCtx = getApplicationContext();
+            File downloadDirectory = appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (downloadDirectory == null) {
+                sendAppUpdateProgress("failed", 0, 0, 0, "Could not access device storage for the update APK.");
                 return "failed";
             }
+            if (!downloadDirectory.exists()) {
+                downloadDirectory.mkdirs();
+            }
+            File apkFile = new File(downloadDirectory, "hutaotik-update.apk");
+            if (apkFile.exists() && !apkFile.delete()) {
+                sendAppUpdateProgress("failed", 0, 0, 0, "Could not clear previous update APK.");
+                return "failed";
+            }
+
+            String taskId = "app-update-" + System.currentTimeMillis();
+            sendAppUpdateProgress("downloading", 2, 0, 0, "Starting APK download…");
+
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                taskId,
+                "Downloading HutaoTik Update",
+                "App Update",
+                true,
+                (task) -> {
+                    HttpURLConnection conn = null;
+                    try {
+                        task.updateProgress(2, 0, 0, -1, "Connecting to update server…");
+                        sendAppUpdateProgress("downloading", 2, 0, 0, "Connecting to update server…");
+
+                        String currentUrl = rawUrl.trim();
+                        int redirects = 0;
+                        while (redirects < 6) {
+                            task.checkCancelled();
+                            URL parsed = new URL(currentUrl);
+                            if (!"https".equalsIgnoreCase(parsed.getProtocol())) {
+                                throw new IllegalStateException("Insecure update redirect blocked.");
+                            }
+                            conn = (HttpURLConnection) parsed.openConnection();
+                            conn.setInstanceFollowRedirects(false);
+                            conn.setConnectTimeout(30_000);
+                            conn.setReadTimeout(90_000);
+                            conn.setRequestProperty("User-Agent", "HutaoTik-Updater/Android");
+                            conn.setRequestProperty("Accept", "application/vnd.android.package-archive,*/*");
+                            int code = conn.getResponseCode();
+                            if (code == HttpURLConnection.HTTP_MOVED_PERM ||
+                                code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                                code == HttpURLConnection.HTTP_SEE_OTHER ||
+                                code == 307 || code == 308) {
+                                String nextLocation = conn.getHeaderField("Location");
+                                conn.disconnect();
+                                if (nextLocation == null || nextLocation.trim().isEmpty()) {
+                                    throw new IllegalStateException("Update server returned an empty redirect.");
+                                }
+                                currentUrl = new URL(parsed, nextLocation).toString();
+                                redirects += 1;
+                                continue;
+                            }
+                            if (code < 200 || code >= 300) {
+                                String serverError = readConnectionError(conn);
+                                throw new IllegalStateException(
+                                    serverError != null && !serverError.isEmpty()
+                                        ? serverError
+                                        : "Update download failed (HTTP " + code + ")."
+                                );
+                            }
+                            break;
+                        }
+                        if (conn == null) {
+                            throw new IllegalStateException("Could not connect to update server.");
+                        }
+
+                        long totalBytes = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                            ? conn.getContentLengthLong()
+                            : conn.getContentLength();
+                        long loadedBytes = 0L;
+                        long startedAt = System.currentTimeMillis();
+                        long lastUiEmit = 0L;
+
+                        try (InputStream in = conn.getInputStream();
+                             FileOutputStream out = new FileOutputStream(apkFile)) {
+                            byte[] buffer = new byte[32 * 1024];
+                            int read;
+                            while ((read = in.read(buffer)) != -1) {
+                                task.checkCancelled();
+                                out.write(buffer, 0, read);
+                                loadedBytes += read;
+
+                                int percent;
+                                long etaSec = -1;
+                                if (totalBytes > 0) {
+                                    percent = 2 + (int) Math.min(92, Math.round((loadedBytes * 92.0) / totalBytes));
+                                    long elapsedMs = Math.max(1L, System.currentTimeMillis() - startedAt);
+                                    if (loadedBytes > 64 * 1024 && elapsedMs > 500) {
+                                        double bps = (loadedBytes * 1000.0) / elapsedMs;
+                                        if (bps > 100) {
+                                            etaSec = Math.max(1L, Math.round((totalBytes - loadedBytes) / bps));
+                                        }
+                                    }
+                                } else {
+                                    double pseudo = 1.0 - Math.exp(-loadedBytes / (15.0 * 1024.0 * 1024.0));
+                                    percent = 2 + (int) Math.min(90, Math.round(pseudo * 90.0));
+                                }
+
+                                task.updateProgress(percent, loadedBytes, totalBytes > 0 ? totalBytes : 0, etaSec, "Downloading update APK…");
+                                long now = System.currentTimeMillis();
+                                if (now - lastUiEmit >= 200) {
+                                    lastUiEmit = now;
+                                    sendAppUpdateProgress("downloading", percent, loadedBytes, totalBytes > 0 ? totalBytes : 0, "Downloading update APK…");
+                                }
+                            }
+                        }
+
+                        task.checkCancelled();
+                        if (!apkFile.exists() || apkFile.length() < 4) {
+                            throw new IllegalStateException("Downloaded update APK was empty.");
+                        }
+
+                        // Verify APK ZIP magic bytes (PK\x03\x04)
+                        byte[] header = new byte[4];
+                        try (FileInputStream checkIn = new FileInputStream(apkFile)) {
+                            int n = checkIn.read(header);
+                            if (n < 4 || header[0] != 0x50 || header[1] != 0x4b || header[2] != 0x03 || header[3] != 0x04) {
+                                apkFile.delete();
+                                throw new IllegalStateException("The update link did not return a valid Android APK file.");
+                            }
+                        }
+
+                        if (!expectedSha256.isEmpty()) {
+                            task.updateProgress(96, apkFile.length(), apkFile.length(), -1, "Verifying APK checksum…");
+                            sendAppUpdateProgress("verifying", 96, apkFile.length(), apkFile.length(), "Verifying APK checksum…");
+                            if (!expectedSha256.equalsIgnoreCase(calculateSha256(apkFile))) {
+                                apkFile.delete();
+                                throw new IllegalStateException("The downloaded APK failed its SHA-256 integrity check.");
+                            }
+                        }
+
+                        Uri apkUri = FileProvider.getUriForFile(
+                            appCtx,
+                            appCtx.getPackageName() + ".fileprovider",
+                            apkFile
+                        );
+
+                        task.markCancelledSilently(); // Remove ongoing progress bar cleanly
+                        HutaoNotificationHelper.showUpdateReadyToInstallNotification(appCtx, apkUri);
+                        sendAppUpdateProgress("installing", 100, apkFile.length(), apkFile.length(), "Opening Android package installer…");
+
+                        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+                        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                        installIntent.addFlags(
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK
+                        );
+                        MainActivity act = activeInstance;
+                        if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+                            act.runOnUiThread(() -> {
+                                if (act.isFinishing() || act.isDestroyed()) return;
+                                try {
+                                    act.startActivity(installIntent);
+                                } catch (Throwable launchErr) {
+                                    sendAppUpdateProgress("failed", 0, 0, 0, "Could not launch installer: " + launchErr.getMessage());
+                                }
+                            });
+                        } else {
+                            try {
+                                appCtx.startActivity(installIntent);
+                            } catch (Throwable ignored) {
+                                // User can tap the "HutaoTik Update Ready" notification to install
+                            }
+                        }
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        if (apkFile.exists()) apkFile.delete();
+                        task.markCancelledSilently();
+                        sendAppUpdateProgress("failed", 0, 0, 0, "Update download was cancelled.");
+                    } catch (Throwable e) {
+                        if (apkFile.exists()) apkFile.delete();
+                        String msg = e.getMessage() != null ? e.getMessage() : "Update APK download failed.";
+                        task.markFailed(msg);
+                        sendAppUpdateProgress("failed", 0, 0, 0, msg);
+                        showUpdateToast(msg);
+                    } finally {
+                        if (conn != null) conn.disconnect();
+                    }
+                },
+                null
+            );
+
+            return "started";
+        }
+
+        private String readConnectionError(HttpURLConnection conn) {
+            try (InputStream err = conn.getErrorStream()) {
+                if (err == null) return null;
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(err))) {
+                    String line;
+                    while ((line = br.readLine()) != null && sb.length() < 1024) {
+                        sb.append(line);
+                    }
+                }
+                String raw = sb.toString().trim();
+                if (raw.startsWith("{")) {
+                    JSONObject obj = new JSONObject(raw);
+                    String msg = obj.optString("error", "");
+                    if (!msg.isEmpty()) return msg;
+                }
+            } catch (Exception ignored) {
+            }
+            return null;
         }
 
         private String calculateSha256(File file) throws Exception {
@@ -333,7 +568,13 @@ public class MainActivity extends BridgeActivity {
         }
 
         private void showUpdateToast(String message) {
-            runOnUiThread(() -> Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show());
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                try {
+                    Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show();
+                } catch (Throwable ignored) {
+                }
+            });
         }
 
         @JavascriptInterface
@@ -350,7 +591,7 @@ public class MainActivity extends BridgeActivity {
                     data.put("sdUrl", JSONObject.NULL);
                     data.put("nativeDownload", true);
                     sendFacebookResult(requestId, data);
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     sendFacebookError(requestId, e);
                 }
             });
@@ -384,7 +625,7 @@ public class MainActivity extends BridgeActivity {
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         task.markCancelledSilently();
                         sendFacebookError(requestId, new Exception("Download cancelled."));
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         task.markFailed(e.getMessage());
                         sendFacebookError(requestId, e);
                     }
@@ -450,7 +691,7 @@ public class MainActivity extends BridgeActivity {
                     data.put("duration", info.getDuration());
                     data.put("formats", formats);
                     sendYouTubeResult(requestId, data);
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     sendYouTubeError(requestId, e);
                 }
             });
@@ -487,7 +728,7 @@ public class MainActivity extends BridgeActivity {
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         task.markCancelledSilently();
                         sendYouTubeError(requestId, new Exception("Download cancelled."));
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         task.markFailed(e.getMessage());
                         sendYouTubeError(requestId, e);
                     } finally {
@@ -505,7 +746,7 @@ public class MainActivity extends BridgeActivity {
                     String normalizedPlatform = normalizeSocialPlatform(platform);
                     JSONObject data = fetchSocialVideoInfoNative(normalizedPlatform, url);
                     sendSocialVideoResult(requestId, data);
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     sendSocialVideoError(requestId, e);
                 }
             });
@@ -561,7 +802,7 @@ public class MainActivity extends BridgeActivity {
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         task.markCancelledSilently();
                         sendSocialVideoError(requestId, new Exception("Download cancelled."));
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         task.markFailed(e.getMessage());
                         sendSocialVideoError(requestId, e);
                     } finally {
@@ -634,7 +875,7 @@ public class MainActivity extends BridgeActivity {
                         : inferMimeTypeFromFilename(filename);
                     saveFileToUserFolder(tempFile, filename, folderName, resolvedMime);
                     sendStorageSaveResult(requestId, new JSONObject());
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     sendStorageSaveError(requestId, e);
                 } finally {
                     if (tempFile != null) tempFile.delete();
@@ -709,7 +950,7 @@ public class MainActivity extends BridgeActivity {
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         task.markCancelledSilently();
                         sendMediaError(requestId, new Exception("GIF conversion cancelled."));
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         task.markFailed(e.getMessage());
                         sendMediaError(requestId, e);
                     } finally {
@@ -793,7 +1034,7 @@ public class MainActivity extends BridgeActivity {
                         response.put("filePath", outputFile.getAbsolutePath());
                         response.put("mimeType", "video/mp4");
                         sendMediaResult(requestId, response);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         if (outputFile != null) outputFile.delete();
                         task.markFailed(e.getMessage());
                         sendMediaError(requestId, e);
@@ -823,7 +1064,7 @@ public class MainActivity extends BridgeActivity {
                     JSONObject response = new JSONObject();
                     response.put("filename", finalFilename);
                     sendMediaResult(requestId, response);
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     sendMediaError(requestId, e);
                 }
             });
@@ -848,9 +1089,16 @@ public class MainActivity extends BridgeActivity {
                 shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 Intent chooser = Intent.createChooser(shareIntent, "Share compressed video");
                 chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                runOnUiThread(() -> startActivity(chooser));
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        startActivity(chooser);
+                    } catch (Throwable err) {
+                        Log.e(TAG, "Could not launch video share chooser", err);
+                    }
+                });
                 return true;
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 Log.e(TAG, "Could not share compressed video", e);
                 return false;
             }
@@ -865,15 +1113,18 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void openDeviceFolderPicker() {
-            try {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
-                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
-                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                try {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                    startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER);
+                } catch (Throwable e) {
+                    Log.e(TAG, "Could not launch folder picker", e);
+                }
+            });
         }
 
         @JavascriptInterface
@@ -1015,11 +1266,18 @@ public class MainActivity extends BridgeActivity {
                     == PackageManager.PERMISSION_GRANTED) {
                     return "granted";
                 }
-                runOnUiThread(() -> ActivityCompat.requestPermissions(
-                    MainActivity.this,
-                    new String[] { Manifest.permission.POST_NOTIFICATIONS },
-                    REQUEST_CODE_NOTIFICATIONS
-                ));
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[] { Manifest.permission.POST_NOTIFICATIONS },
+                            REQUEST_CODE_NOTIFICATIONS
+                        );
+                    } catch (Throwable err) {
+                        Log.w(TAG, "Could not request notification permission.", err);
+                    }
+                });
                 return "prompted";
             }
             return HutaoNotificationHelper.hasNotificationPermission(MainActivity.this) ? "granted" : "denied";
@@ -1028,6 +1286,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void openNotificationSettings() {
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
                 try {
                     Intent intent = new Intent();
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1039,7 +1298,7 @@ public class MainActivity extends BridgeActivity {
                     }
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(intent);
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     Log.e(TAG, "Could not open Android notification settings", e);
                 }
             });
@@ -1119,7 +1378,7 @@ public class MainActivity extends BridgeActivity {
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         task.markCancelledSilently();
                         sendDirectDownloadError(requestId, new Exception("Download cancelled."));
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         task.markFailed(e.getMessage());
                         sendDirectDownloadError(requestId, e);
                     }
@@ -1290,8 +1549,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void ensureYouTubeDownloader() {
-        if (youtubeInitError != null) {
-            throw new IllegalStateException("The on-device downloader could not start: " + youtubeInitError);
+        awaitYoutubeDlInit();
+        if (sharedYoutubeInitError != null) {
+            throw new IllegalStateException("The on-device downloader could not start: " + sharedYoutubeInitError);
         }
         synchronized (ytDlpUpdateLock) {
             if (!youtubeUpdateChecked) {
@@ -1302,7 +1562,7 @@ public class MainActivity extends BridgeActivity {
                         YoutubeDL.UpdateChannel._NIGHTLY
                     );
                     Log.i(TAG, "yt-dlp update check completed: " + status);
-                } catch (YoutubeDLException | RuntimeException e) {
+                } catch (Throwable e) {
                     Log.w(TAG, "Could not update yt-dlp; continuing with the bundled version.", e);
                 }
             }
@@ -1364,55 +1624,53 @@ public class MainActivity extends BridgeActivity {
         }
 
         // Tier 2: On-device yt-dlp extraction (auto-updated nightly + bundled FFmpeg)
-        Exception ytDlpError = null;
-        if (youtubeInitError == null) {
-            try {
-                ensureYouTubeDownloader();
-                VideoInfo info = YoutubeDL.getInstance().getInfo(createSocialVideoRequest(platform, canonicalUrl));
-                int maxHeight = 0;
-                boolean hasVideo = info.getUrl() != null && !info.getUrl().isEmpty();
-                java.util.ArrayList<com.yausername.youtubedl_android.mapper.VideoFormat> formats = info.getFormats();
-                if (formats != null) {
-                    for (com.yausername.youtubedl_android.mapper.VideoFormat format : formats) {
-                        if (format == null) continue;
-                        String vcodec = format.getVcodec();
-                        boolean isVideoFormat = vcodec == null || !"none".equalsIgnoreCase(vcodec);
-                        if (isVideoFormat) {
-                            if (format.getUrl() != null && !format.getUrl().isEmpty()) {
-                                hasVideo = true;
-                            }
-                            if (format.getHeight() > maxHeight) {
-                                maxHeight = format.getHeight();
-                            }
+        Throwable ytDlpError = null;
+        try {
+            ensureYouTubeDownloader();
+            VideoInfo info = YoutubeDL.getInstance().getInfo(createSocialVideoRequest(platform, canonicalUrl));
+            int maxHeight = 0;
+            boolean hasVideo = info.getUrl() != null && !info.getUrl().isEmpty();
+            java.util.ArrayList<com.yausername.youtubedl_android.mapper.VideoFormat> formats = info.getFormats();
+            if (formats != null) {
+                for (com.yausername.youtubedl_android.mapper.VideoFormat format : formats) {
+                    if (format == null) continue;
+                    String vcodec = format.getVcodec();
+                    boolean isVideoFormat = vcodec == null || !"none".equalsIgnoreCase(vcodec);
+                    if (isVideoFormat) {
+                        if (format.getUrl() != null && !format.getUrl().isEmpty()) {
+                            hasVideo = true;
+                        }
+                        if (format.getHeight() > maxHeight) {
+                            maxHeight = format.getHeight();
                         }
                     }
                 }
-                if (maxHeight <= 0 && info.getHeight() > 0) {
-                    maxHeight = info.getHeight();
-                }
-
-                if (hasVideo) {
-                    JSONObject data = new JSONObject();
-                    data.put("id", info.getId() != null ? info.getId() : "");
-                    data.put("title", info.getTitle() != null && !info.getTitle().trim().isEmpty()
-                        ? info.getTitle().trim()
-                        : providerName + " Video");
-                    data.put("thumbnail", info.getThumbnail() != null ? info.getThumbnail() : JSONObject.NULL);
-                    data.put("channelName", info.getUploader() != null && !info.getUploader().trim().isEmpty()
-                        ? info.getUploader().trim()
-                        : providerName);
-                    data.put("duration", Math.max(0, info.getDuration()));
-                    data.put("height", maxHeight > 0 ? maxHeight : JSONObject.NULL);
-                    data.put("mediaType", "video");
-                    data.put("directUrl", JSONObject.NULL);
-                    data.put("canonicalUrl", canonicalUrl);
-                    data.put("nativeDownload", true);
-                    return data;
-                }
-            } catch (Exception e) {
-                ytDlpError = e;
-                Log.w(TAG, "On-device yt-dlp info failed for " + platform + ": " + e.getMessage());
             }
+            if (maxHeight <= 0 && info.getHeight() > 0) {
+                maxHeight = info.getHeight();
+            }
+
+            if (hasVideo) {
+                JSONObject data = new JSONObject();
+                data.put("id", info.getId() != null ? info.getId() : "");
+                data.put("title", info.getTitle() != null && !info.getTitle().trim().isEmpty()
+                    ? info.getTitle().trim()
+                    : providerName + " Video");
+                data.put("thumbnail", info.getThumbnail() != null ? info.getThumbnail() : JSONObject.NULL);
+                data.put("channelName", info.getUploader() != null && !info.getUploader().trim().isEmpty()
+                    ? info.getUploader().trim()
+                    : providerName);
+                data.put("duration", Math.max(0, info.getDuration()));
+                data.put("height", maxHeight > 0 ? maxHeight : JSONObject.NULL);
+                data.put("mediaType", "video");
+                data.put("directUrl", JSONObject.NULL);
+                data.put("canonicalUrl", canonicalUrl);
+                data.put("nativeDownload", true);
+                return data;
+            }
+        } catch (Throwable e) {
+            ytDlpError = e;
+            Log.w(TAG, "On-device yt-dlp info failed for " + platform + ": " + e.getMessage());
         }
 
         // Tier 3: If this Pin / post is a verified image (not a video), allow downloading the image
@@ -1509,25 +1767,23 @@ public class MainActivity extends BridgeActivity {
         }
 
         // Primary muxing/HLS/DASH path: on-device yt-dlp + bundled FFmpeg
-        Exception ytDlpError = null;
-        if (youtubeInitError == null) {
-            try {
-                ensureYouTubeDownloader();
-                File downloaded = downloadSocialWithYtDlp(platform, canonicalUrl, outputDir, requestId);
-                return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
-            } catch (Exception e) {
-                ytDlpError = e;
-                Log.w(TAG, "On-device yt-dlp download failed on canonical URL for " + platform, e);
-            }
+        Throwable ytDlpError = null;
+        try {
+            ensureYouTubeDownloader();
+            File downloaded = downloadSocialWithYtDlp(platform, canonicalUrl, outputDir, requestId);
+            return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
+        } catch (Throwable e) {
+            ytDlpError = e;
+            Log.w(TAG, "On-device yt-dlp download failed on canonical URL for " + platform, e);
+        }
 
-            if (directIsAllowed && directIsHls) {
-                try {
-                    File downloaded = downloadSocialWithYtDlp(platform, directUrl, outputDir, requestId);
-                    return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
-                } catch (Exception e) {
-                    ytDlpError = e;
-                    Log.w(TAG, "On-device yt-dlp HLS download failed for " + platform, e);
-                }
+        if (directIsAllowed && directIsHls && sharedYoutubeInitError == null) {
+            try {
+                File downloaded = downloadSocialWithYtDlp(platform, directUrl, outputDir, requestId);
+                return new SocialDownloadResult(downloaded, "video/mp4", "mp4", "video");
+            } catch (Throwable e) {
+                ytDlpError = e;
+                Log.w(TAG, "On-device yt-dlp HLS download failed for " + platform, e);
             }
         }
 
@@ -1549,14 +1805,15 @@ public class MainActivity extends BridgeActivity {
                 );
                 return new SocialDownloadResult(freshFile, "video/mp4", "mp4", "video");
             }
-            if (fresh.hlsUrl != null && youtubeInitError == null &&
+            if (fresh.hlsUrl != null && sharedYoutubeInitError == null &&
                 SocialMediaExtractor.isAllowedMediaUrl(platform, fresh.hlsUrl)) {
                 File freshHls = downloadSocialWithYtDlp(platform, fresh.hlsUrl, outputDir, requestId);
                 return new SocialDownloadResult(freshHls, "video/mp4", "mp4", "video");
             }
         }
 
-        if (ytDlpError != null) throw ytDlpError;
+        if (ytDlpError instanceof Exception) throw (Exception) ytDlpError;
+        if (ytDlpError != null) throw new IllegalStateException(ytDlpError.getMessage() != null ? ytDlpError.getMessage() : "Could not download this " + platform + " video on device.");
         throw new IllegalStateException("Could not download this " + platform + " video on device.");
     }
 
@@ -1572,7 +1829,11 @@ public class MainActivity extends BridgeActivity {
             throw new IllegalStateException("Could not prepare yt-dlp download directory.");
         }
         File outputTemplate = new File(runDir, "social.%(ext)s");
-        boolean hasFfmpeg = facebookFfmpegInitError == null;
+        try {
+            awaitFfmpegInit();
+        } catch (Throwable ignored) {
+        }
+        boolean hasFfmpeg = sharedFfmpegInitError == null;
 
         YoutubeDLRequest request = createSocialVideoRequest(platform, targetUrl)
             .addOption("-o", outputTemplate.getAbsolutePath());
@@ -1652,8 +1913,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void ensureBundledFfmpeg() {
-        if (facebookFfmpegInitError != null) {
-            throw new IllegalStateException("On-device FFmpeg failed to initialize: " + facebookFfmpegInitError);
+        awaitFfmpegInit();
+        if (sharedFfmpegInitError != null) {
+            throw new IllegalStateException("On-device FFmpeg failed to initialize: " + sharedFfmpegInitError);
         }
         File ffmpegBin = new File(getApplicationInfo().nativeLibraryDir, "libffmpeg.so");
         if (!ffmpegBin.exists()) {
@@ -1795,22 +2057,20 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    private void sendMediaError(String requestId, Exception error) {
+    private void sendMediaError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
-            result.put("error", error.getMessage() != null ? error.getMessage() : "Media processing failed.");
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Media processing failed.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendMediaResult(requestId, result);
     }
 
     private void sendMediaResult(String requestId, JSONObject result) {
-        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
-        if (webView == null) return;
         String script = "window.onNativeMediaResult && window.onNativeMediaResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
     private String inferMimeTypeFromFilename(String filename) {
@@ -1931,92 +2191,82 @@ public class MainActivity extends BridgeActivity {
         } catch (JSONException e) {
             return;
         }
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeDownloadProgress && window.onNativeDownloadProgress(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(payload.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
     private WebView getSafeWebView() {
         MainActivity act = activeInstance != null ? activeInstance : this;
         try {
-            return act.getBridge() != null ? act.getBridge().getWebView() : null;
-        } catch (Exception ignored) {
+            return act != null && act.getBridge() != null ? act.getBridge().getWebView() : null;
+        } catch (Throwable ignored) {
             return null;
         }
     }
 
-    private void sendDirectDownloadError(String requestId, Exception error) {
+    private void sendDirectDownloadError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
             result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Download failed.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendDirectDownloadResult(requestId, result);
     }
 
     private void sendDirectDownloadResult(String requestId, JSONObject result) {
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeDirectDownloadResult && window.onNativeDirectDownloadResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
-    private void sendStorageSaveError(String requestId, Exception error) {
+    private void sendStorageSaveError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
-            result.put("error", error.getMessage() != null ? error.getMessage() : "Could not save downloaded file.");
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Could not save downloaded file.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendStorageSaveResult(requestId, result);
     }
 
     private void sendStorageSaveResult(String requestId, JSONObject result) {
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeStorageSaveResult && window.onNativeStorageSaveResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
-    private void sendSocialVideoError(String requestId, Exception error) {
+    private void sendSocialVideoError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
-            result.put("error", error.getMessage() != null ? error.getMessage() : "Download failed.");
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Download failed.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendSocialVideoResult(requestId, result);
     }
 
     private void sendSocialVideoResult(String requestId, JSONObject result) {
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeSocialVideoResult && window.onNativeSocialVideoResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
-    private void sendYouTubeError(String requestId, Exception error) {
+    private void sendYouTubeError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
-            result.put("error", error.getMessage() != null ? error.getMessage() : "YouTube download failed.");
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "YouTube download failed.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendYouTubeResult(requestId, result);
     }
 
     private void sendYouTubeResult(String requestId, JSONObject result) {
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeYouTubeResult && window.onNativeYouTubeResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
     private File downloadFacebookFile(String url, String quality, String filename, String requestId) throws Exception {
@@ -2094,33 +2344,33 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void ensureFacebookDownloader() {
-        if (facebookInitError != null) {
-            throw new IllegalStateException("The on-device Facebook downloader could not start: " + facebookInitError);
+        awaitYoutubeDlInit();
+        if (sharedYoutubeInitError != null) {
+            throw new IllegalStateException("The on-device Facebook downloader could not start: " + sharedYoutubeInitError);
         }
     }
 
     private void ensureFacebookAudioTools() {
-        if (facebookFfmpegInitError != null) {
-            throw new IllegalStateException("Facebook MP3 downloads are unavailable: " + facebookFfmpegInitError);
+        awaitFfmpegInit();
+        if (sharedFfmpegInitError != null) {
+            throw new IllegalStateException("Facebook MP3 downloads are unavailable: " + sharedFfmpegInitError);
         }
     }
 
-    private void sendFacebookError(String requestId, Exception error) {
+    private void sendFacebookError(String requestId, Throwable error) {
         JSONObject result = new JSONObject();
         try {
-            result.put("error", error.getMessage() != null ? error.getMessage() : "Facebook download failed.");
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Facebook download failed.");
         } catch (JSONException e) {
-            throw new IllegalStateException(e);
+            return;
         }
         sendFacebookResult(requestId, result);
     }
 
     private void sendFacebookResult(String requestId, JSONObject result) {
-        WebView webView = getSafeWebView();
-        if (webView == null) return;
         String script = "window.onNativeFacebookResult && window.onNativeFacebookResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        evalJsSafely(script);
     }
 
     @Override
@@ -2134,12 +2384,9 @@ public class MainActivity extends BridgeActivity {
                 NotificationSyncJobService.schedule(this);
                 NotificationSyncJobService.checkNowAsync(this, false);
             }
-            WebView webView = getSafeWebView();
-            if (webView != null) {
-                String script = "window.onNotificationPermissionResult && window.onNotificationPermissionResult(" +
-                    (granted ? "true" : "false") + ");";
-                webView.post(() -> webView.evaluateJavascript(script, null));
-            }
+            String script = "window.onNotificationPermissionResult && window.onNotificationPermissionResult(" +
+                (granted ? "true" : "false") + ");";
+            evalJsSafely(script);
         }
     }
 
@@ -2156,25 +2403,25 @@ public class MainActivity extends BridgeActivity {
                             treeUri,
                             Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                         );
-                    } catch (Exception e) {
-                        e.printStackTrace();
+                    } catch (Throwable e) {
+                        Log.w(TAG, "Could not persist folder URI permission.", e);
                     }
                     getSharedPreferences("hutaotik", MODE_PRIVATE).edit()
                         .putString(FACEBOOK_FOLDER_PREF, treeUri.toString())
                         .apply();
-                    DocumentFile pickedDir = DocumentFile.fromTreeUri(this, treeUri);
-                    pickedName = (pickedDir != null && pickedDir.getName() != null)
-                        ? pickedDir.getName()
-                        : "HutaoTik Downloads";
+                    try {
+                        DocumentFile pickedDir = DocumentFile.fromTreeUri(this, treeUri);
+                        pickedName = (pickedDir != null && pickedDir.getName() != null)
+                            ? pickedDir.getName()
+                            : "HutaoTik Downloads";
+                    } catch (Throwable ignored) {
+                        pickedName = "HutaoTik Downloads";
+                    }
                 }
             }
-            final String finalPickedName = pickedName;
-            WebView webView = getBridge().getWebView();
-            if (webView != null) {
-                String script = "window.onAndroidFolderPicked && window.onAndroidFolderPicked(" +
-                    JSONObject.quote(finalPickedName) + ");";
-                webView.post(() -> webView.evaluateJavascript(script, null));
-            }
+            String script = "window.onAndroidFolderPicked && window.onAndroidFolderPicked(" +
+                JSONObject.quote(pickedName) + ");";
+            evalJsSafely(script);
         }
     }
 
@@ -2187,43 +2434,61 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handleNotificationRouteIntent(Intent intent) {
-        if (intent == null) return;
-        String route = intent.getStringExtra(HutaoNotificationHelper.EXTRA_ROUTE);
-        if (route == null || route.trim().isEmpty()) return;
-        String cleanRoute = route.trim();
-        if (!cleanRoute.startsWith("/")) cleanRoute = "/" + cleanRoute;
-        pendingNotificationRoute.set(cleanRoute);
-        final String hashTarget = "#" + cleanRoute;
-        WebView webView = getSafeWebView();
-        if (webView != null) {
-            webView.post(() -> {
-                if (webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
-                    webView.evaluateJavascript(
-                        "window.location.hash = " + JSONObject.quote(hashTarget) + ";" +
-                        (hashTarget.equals("#/updates") ? "window.dispatchEvent(new Event('hutaotik:check-update'));" : ""),
-                        null
-                    );
-                }
-            });
+        try {
+            if (intent == null) return;
+            String route = intent.getStringExtra(HutaoNotificationHelper.EXTRA_ROUTE);
+            if (route == null || route.trim().isEmpty()) return;
+            String cleanRoute = route.trim();
+            if (!cleanRoute.startsWith("/")) cleanRoute = "/" + cleanRoute;
+            pendingNotificationRoute.set(cleanRoute);
+            final String hashTarget = "#" + cleanRoute;
+            WebView webView = getSafeWebView();
+            if (webView != null) {
+                webView.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        if (webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
+                            webView.evaluateJavascript(
+                                "window.location.hash = " + JSONObject.quote(hashTarget) + ";" +
+                                (hashTarget.equals("#/updates") ? "window.dispatchEvent(new Event('hutaotik:check-update'));" : ""),
+                                null
+                            );
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                });
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Ignored malformed notification route intent.", t);
         }
     }
 
     private void handleSendIntent(Intent intent) {
-        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
-            CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-            if ((sharedText == null || sharedText.length() == 0) && intent.getClipData() != null &&
-                intent.getClipData().getItemCount() > 0) {
-                sharedText = intent.getClipData().getItemAt(0).coerceToText(this);
-            }
-            if (sharedText != null && sharedText.length() > 0) {
-                pendingSharedText.set(sharedText.toString().trim());
-                WebView webView = getBridge().getWebView();
-                webView.post(() -> {
-                    if (webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
-                        webView.evaluateJavascript("window.location.hash = '#/';", null);
+        try {
+            if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+                CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+                if ((sharedText == null || sharedText.length() == 0) && intent.getClipData() != null &&
+                    intent.getClipData().getItemCount() > 0) {
+                    sharedText = intent.getClipData().getItemAt(0).coerceToText(this);
+                }
+                if (sharedText != null && sharedText.length() > 0) {
+                    pendingSharedText.set(sharedText.toString().trim());
+                    WebView webView = getSafeWebView();
+                    if (webView != null) {
+                        webView.post(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            try {
+                                if (webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
+                                    webView.evaluateJavascript("window.location.hash = '#/';", null);
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        });
                     }
-                });
+                }
             }
+        } catch (Throwable t) {
+            Log.w(TAG, "Ignored malformed share intent.", t);
         }
     }
 }

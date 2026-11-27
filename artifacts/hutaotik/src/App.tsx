@@ -16,6 +16,8 @@ import {
   saveDropdownSpeed,
 } from "@/lib/dropdown-animations";
 import { applyThemeCustomization, loadThemeCustomization } from "@/lib/theme-customization";
+import { applyDisplayScale, loadDisplayScale } from "@/lib/display-scale";
+import { applyFontStyle, loadFontStyle } from "@/lib/font-style";
 import { loadUiStyle, saveUiStyle } from "@/lib/ui-style";
 import { Layout } from "@/components/layout";
 import { SplashIntro } from "@/components/splash-intro";
@@ -38,9 +40,13 @@ import { AppUpdateChecker } from "@/components/app-update-checker";
 const queryClient = new QueryClient();
 
 // Initialize admin token from localStorage so protected API calls work on page reload
-const storedToken = localStorage.getItem("admin_token");
-if (storedToken) {
-  setExtraHeaders({ "x-admin-token": storedToken });
+try {
+  const storedToken = localStorage.getItem("admin_token");
+  if (storedToken) {
+    setExtraHeaders({ "x-admin-token": storedToken });
+  }
+} catch {
+  /* ignore restricted storage */
 }
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: string | null }> {
@@ -176,12 +182,18 @@ function App() {
   );
 
   useEffect(() => {
-    const customization = loadThemeCustomization();
-    if (customization) applyThemeCustomization(customization);
-    saveUiStyle(loadUiStyle());
-    applyBounceAnimation(loadBounceAnimationEnabled());
-    saveDropdownAnimation(loadDropdownAnimation());
-    saveDropdownSpeed(loadDropdownSpeed());
+    try {
+      const customization = loadThemeCustomization();
+      if (customization) applyThemeCustomization(customization);
+      saveUiStyle(loadUiStyle());
+      applyDisplayScale(loadDisplayScale());
+      applyFontStyle(loadFontStyle());
+      applyBounceAnimation(loadBounceAnimationEnabled());
+      saveDropdownAnimation(loadDropdownAnimation());
+      saveDropdownSpeed(loadDropdownSpeed());
+    } catch (error) {
+      console.error("Could not restore saved visual preferences.", error);
+    }
 
     const handleHashChange = () => {
       setPublishPreview(window.location.hash.replace("#", "").split("?")[0] === "/publish-preview");

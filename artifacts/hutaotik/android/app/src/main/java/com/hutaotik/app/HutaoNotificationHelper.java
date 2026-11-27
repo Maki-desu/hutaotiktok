@@ -47,51 +47,58 @@ public final class HutaoNotificationHelper {
 
     public static void ensureChannels(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager == null) return;
+        try {
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            if (manager == null) return;
 
-        NotificationChannel progressChannel = new NotificationChannel(
-            CHANNEL_DOWNLOAD_PROGRESS,
-            "Live Downloads",
-            NotificationManager.IMPORTANCE_LOW
-        );
-        progressChannel.setDescription("Live download progress while videos download in the background");
-        progressChannel.setShowBadge(false);
-        progressChannel.setSound(null, null);
-        progressChannel.enableVibration(false);
-        manager.createNotificationChannel(progressChannel);
+            NotificationChannel progressChannel = new NotificationChannel(
+                CHANNEL_DOWNLOAD_PROGRESS,
+                "Live Downloads",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            progressChannel.setDescription("Live download progress while videos download in the background");
+            progressChannel.setShowBadge(false);
+            progressChannel.setSound(null, null);
+            progressChannel.enableVibration(false);
+            manager.createNotificationChannel(progressChannel);
 
-        NotificationChannel completeChannel = new NotificationChannel(
-            CHANNEL_DOWNLOAD_COMPLETE,
-            "Completed Downloads",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        completeChannel.setDescription("Alerts when a video, GIF, or audio download finishes or fails");
-        manager.createNotificationChannel(completeChannel);
+            NotificationChannel completeChannel = new NotificationChannel(
+                CHANNEL_DOWNLOAD_COMPLETE,
+                "Completed Downloads",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            completeChannel.setDescription("Alerts when a video, GIF, or audio download finishes or fails");
+            manager.createNotificationChannel(completeChannel);
 
-        NotificationChannel updatesChannel = new NotificationChannel(
-            CHANNEL_UPDATES,
-            "App Updates",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        updatesChannel.setDescription("Alerts when a new HutaoTik update is released");
-        manager.createNotificationChannel(updatesChannel);
+            NotificationChannel updatesChannel = new NotificationChannel(
+                CHANNEL_UPDATES,
+                "App Updates",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            updatesChannel.setDescription("Alerts when a new HutaoTik update is released");
+            manager.createNotificationChannel(updatesChannel);
 
-        NotificationChannel announcementsChannel = new NotificationChannel(
-            CHANNEL_ANNOUNCEMENTS,
-            "Announcements",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        announcementsChannel.setDescription("Important announcements and news from HutaoTik");
-        manager.createNotificationChannel(announcementsChannel);
+            NotificationChannel announcementsChannel = new NotificationChannel(
+                CHANNEL_ANNOUNCEMENTS,
+                "Announcements",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            announcementsChannel.setDescription("Important announcements and news from HutaoTik");
+            manager.createNotificationChannel(announcementsChannel);
+        } catch (Throwable ignored) {
+        }
     }
 
     public static boolean hasNotificationPermission(Context context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            int granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS);
-            if (granted != PackageManager.PERMISSION_GRANTED) return false;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                int granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS);
+                if (granted != PackageManager.PERMISSION_GRANTED) return false;
+            }
+            return NotificationManagerCompat.from(context).areNotificationsEnabled();
+        } catch (Throwable ignored) {
+            return false;
         }
-        return NotificationManagerCompat.from(context).areNotificationsEnabled();
     }
 
     public static SharedPreferences prefs(Context context) {
@@ -276,7 +283,7 @@ public final class HutaoNotificationHelper {
 
         try {
             NotificationManagerCompat.from(context).notify(notificationId, builder.build());
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
     }
 
@@ -305,7 +312,7 @@ public final class HutaoNotificationHelper {
 
         try {
             NotificationManagerCompat.from(context).notify(notificationId, builder.build());
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
     }
 
@@ -340,7 +347,40 @@ public final class HutaoNotificationHelper {
         try {
             NotificationManagerCompat.from(context).notify(8100, builder.build());
             prefs(context).edit().putInt(KEY_LAST_UPDATE_CODE, versionCode).apply();
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void showUpdateReadyToInstallNotification(
+        Context context,
+        Uri apkUri
+    ) {
+        if (!hasNotificationPermission(context) || apkUri == null) return;
+        ensureChannels(context);
+
+        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        PendingIntent installPending = PendingIntent.getActivity(
+            context.getApplicationContext(),
+            8150,
+            installIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_stat_update)
+            .setColor(COLOR_EMERALD)
+            .setContentTitle("HutaoTik Update Ready")
+            .setContentText("Tap here to install the downloaded HutaoTik APK.")
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(installPending);
+
+        try {
+            NotificationManagerCompat.from(context).notify(8150, builder.build());
+        } catch (Throwable ignored) {
         }
     }
 
@@ -378,7 +418,7 @@ public final class HutaoNotificationHelper {
 
         try {
             NotificationManagerCompat.from(context).notify(8200 + (announcementId % 500), builder.build());
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
     }
 
@@ -397,7 +437,7 @@ public final class HutaoNotificationHelper {
         try {
             NotificationManagerCompat.from(context).notify(8999, builder.build());
             return true;
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
             return false;
         }
     }

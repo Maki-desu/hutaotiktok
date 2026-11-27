@@ -7,6 +7,7 @@
         android:label="${appLabel}"
         android:roundIcon="@mipmap/${appRoundIcon}"
         android:supportsRtl="true"
+        android:largeHeap="true"
         android:requestLegacyExternalStorage="true"
         android:theme="@style/AppTheme">
 
@@ -34,6 +35,11 @@
 
         <service
             android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".AdminUploadForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 

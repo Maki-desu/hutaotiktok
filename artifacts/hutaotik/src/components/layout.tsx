@@ -3,7 +3,7 @@ import {
   useGetPublicSettings,
   getGetPublicSettingsQueryKey,
 } from "@workspace/api-client-react";
-import { Coffee, Copy, ExternalLink, Lightbulb, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
+import { Coffee, Copy, ExternalLink, History as HistoryIcon, Lightbulb, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -44,11 +44,11 @@ function GhostOrbit({ logoSrc }: { logoSrc: string }) {
   const onError = useCallback(() => setGhostSrc(GHOST_FALLBACK_SVG), []);
 
   return (
-    <div className="relative shrink-0" style={{ width: 36, height: 36 }}>
+    <div className="relative shrink-0 w-9 h-9">
       {/* Orbit layer — overflows this box intentionally */}
       <div
-        className="absolute pointer-events-none"
-        style={{ width: 80, height: 80, top: "50%", left: "50%", transform: "translate(-50%,-50%)" }}
+        className="absolute pointer-events-none w-20 h-20"
+        style={{ top: "50%", left: "50%", transform: "translate(-50%,-50%)" }}
       >
         {GHOST_CONFIGS.map(({ anim, dur, delay, size, opacity, bob }, i) => (
           <div
@@ -223,10 +223,11 @@ export function Layout({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="app-shell min-h-[100dvh] flex flex-col bg-background text-foreground">
+    <div className="app-shell relative min-h-[100dvh] flex flex-col bg-background text-foreground">
+      <div aria-hidden="true" className="liquid-glass-backdrop pointer-events-none" />
 
       {/* ── Hero / Banner ──────────────────────────────── */}
-      <div className="relative w-full" style={{ minHeight: "220px", overflow: "visible" }}>
+      <div className="relative w-full min-h-[13.75rem]" style={{ overflow: "visible" }}>
         <div className="absolute inset-0 overflow-hidden">
           <img src={bannerSrc} alt="banner" className="w-full h-full object-cover object-center" />
           <div aria-hidden="true" className="hero-banner-depth absolute inset-0" />
@@ -234,95 +235,112 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         {/* Header row */}
-        <header className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2 gap-2">
+        <header className="relative z-10 flex flex-wrap items-center justify-between px-4 pt-4 pb-2 gap-2.5">
           <button
             type="button"
             onClick={() => navigateTo("/")}
             className="flex items-center gap-3 group bg-transparent border-none cursor-pointer text-left shrink-0"
           >
             <GhostOrbit logoSrc={logoSrc} />
-            <span className="text-white font-bold text-lg font-syne tracking-tight leading-none transition-colors duration-200 group-hover:text-primary">
+            <span className="hero-text-shadow text-white font-bold text-lg font-syne tracking-tight leading-none transition-colors duration-200 group-hover:text-primary">
               {publicSettings?.siteTitle || "HutaoTik"}
             </span>
           </button>
 
-          <nav className="flex items-center gap-1.5 flex-wrap justify-end">
+          <nav className="nav-pill-group flex items-center gap-1.5 flex-wrap justify-end max-w-full">
+            {/* History */}
+            <button
+              type="button"
+              onClick={() => navigateTo("/history")}
+              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
+                location === "/history"
+                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
+              }`}
+              data-testid="nav-history"
+              title="Download History"
+              aria-current={location === "/history" ? "page" : undefined}
+            >
+              <HistoryIcon className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+              <span className="nav-pill-label">History</span>
+            </button>
+
             {/* Taotools */}
             <button
               type="button"
               onClick={() => navigateTo("/taotools")}
-              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
                 location === "/taotools"
-                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white border-white/20"
+                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
               }`}
               data-testid="nav-taotools"
               title="Tao Tools Suite"
               aria-current={location === "/taotools" ? "page" : undefined}
             >
-              <Wand2 className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span>Taotools</span>
+              <Wand2 className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+              <span className="nav-pill-label">Taotools</span>
             </button>
 
             {/* Updates */}
             <button
               type="button"
               onClick={() => navigateTo("/updates")}
-              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
                 location === "/updates"
-                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white border-white/20"
+                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
               }`}
               data-testid="nav-updates"
               title="App Version Updates & Changelog"
               aria-current={location === "/updates" ? "page" : undefined}
             >
-              <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span>Updates</span>
+              <Sparkles className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+              <span className="nav-pill-label">Updates</span>
             </button>
 
             {/* Suggestions */}
             <button
               type="button"
               onClick={() => navigateTo("/suggestions")}
-              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
                 location === "/suggestions"
-                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white border-white/20"
+                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
               }`}
               data-testid="nav-suggestions"
               title="Send & View Suggestions"
               aria-current={location === "/suggestions" ? "page" : undefined}
             >
-              <Lightbulb className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span>Suggestions</span>
+              <Lightbulb className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+              <span className="nav-pill-label">Suggestions</span>
             </button>
 
             {/* Settings */}
             <button
               type="button"
               onClick={() => navigateTo("/settings")}
-              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
                 location === "/settings"
-                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
-                  : "text-white border-white/20"
+                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
               }`}
               data-testid="nav-settings"
               title="App Settings"
               aria-current={location === "/settings" ? "page" : undefined}
             >
-              <SettingsIcon className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span>Settings</span>
+              <SettingsIcon className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+              <span className="nav-pill-label">Settings</span>
             </button>
           </nav>
         </header>
 
         {/* Hero text */}
         <div className="relative z-10 px-4 pt-4 pb-8 animate-bounce-pop" style={{ animationDelay: "80ms" }}>
-          <h1 className="text-3xl font-syne font-extrabold text-white leading-tight">
+          <h1 className="hero-text-shadow text-3xl font-syne font-extrabold text-white leading-tight">
             Download <span className="text-primary">anything.</span>
           </h1>
-          <p className="mt-1.5 text-sm text-white/60 font-medium tracking-wide">
+          <p className="hero-text-shadow mt-1.5 text-sm text-white/80 font-medium tracking-wide">
             TikTok
           </p>
         </div>
@@ -364,7 +382,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <DialogTrigger asChild>
           <button
             type="button"
-            className="animate-bounce-pop fixed left-4 z-40 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="coffee-fab animate-bounce-pop fixed left-4 z-40 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-card/95 px-4 py-3 text-sm font-semibold text-foreground shadow-lg shadow-primary/15 backdrop-blur-md hover:border-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{ bottom: "max(1rem, env(safe-area-inset-bottom))", animationDelay: "220ms" }}
           >
             <Coffee className="h-4 w-4 shrink-0 text-primary animate-float-gentle" />

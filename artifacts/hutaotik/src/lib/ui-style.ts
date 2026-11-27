@@ -5,11 +5,21 @@ export type UiStyle = (typeof UI_STYLES)[number];
 const STORAGE_KEY = "hutaotik-ui-style";
 
 export function loadUiStyle(): UiStyle {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  return UI_STYLES.find((style) => style === stored) ?? "normal";
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return UI_STYLES.find((style) => style === stored) ?? "normal";
+  } catch {
+    return "normal";
+  }
 }
 
 export function saveUiStyle(style: UiStyle): void {
-  document.documentElement.dataset.uiStyle = style;
-  localStorage.setItem(STORAGE_KEY, style);
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.dataset.uiStyle = style;
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY, style);
+  } catch {
+    /* ignore storage write errors */
+  }
 }

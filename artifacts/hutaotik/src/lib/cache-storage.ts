@@ -1,11 +1,15 @@
+import { clearLocalHistory, getLocalHistory, getLocalHistoryBytes } from "@/lib/local-history";
+
 export interface CacheStorageInfo {
   totalBytes: number;
   fileCount: number;
+  historyCount: number;
   isNative: boolean;
   breakdown: {
     compressedVideos: number;
     tempDownloads: number;
     updateApks: number;
+    historyBytes: number;
   };
 }
 
@@ -33,19 +37,25 @@ export function formatStorageBytes(bytes: number): string {
 }
 
 export async function inspectCacheStorage(): Promise<CacheStorageInfo> {
+  const historyCount = getLocalHistory().length;
+  const historyBytes = getLocalHistoryBytes();
+
   const bridge = getCacheBridge();
   if (bridge?.getCacheStorageInfo) {
     try {
       const raw = bridge.getCacheStorageInfo();
       const parsed = JSON.parse(raw) as Partial<CacheStorageInfo>;
+      const nativeBytes = typeof parsed.totalBytes === "number" ? parsed.totalBytes : 0;
       return {
-        totalBytes: typeof parsed.totalBytes === "number" ? parsed.totalBytes : 0,
+        totalBytes: nativeBytes + historyBytes,
         fileCount: typeof parsed.fileCount === "number" ? parsed.fileCount : 0,
+        historyCount,
         isNative: true,
         breakdown: {
           compressedVideos: parsed.breakdown?.compressedVideos ?? 0,
           tempDownloads: parsed.breakdown?.tempDownloads ?? 0,
           updateApks: parsed.breakdown?.updateApks ?? 0,
+          historyBytes,
         },
       };
     } catch {
@@ -64,21 +74,32 @@ export async function inspectCacheStorage(): Promise<CacheStorageInfo> {
   }
 
   return {
-    totalBytes: webBytes,
+    totalBytes: webBytes + historyBytes,
     fileCount: 0,
+    historyCount,
     isNative: false,
     breakdown: {
       compressedVideos: 0,
       tempDownloads: webBytes,
       updateApks: 0,
+      historyBytes,
     },
   };
 }
 
-export async function clearTemporaryCache(): Promise<{ freedBytes: number }> {
+export async function clearTemporaryCache(): Promise<{
+  freedBytes: number;
+  clearedHistoryCount: number;
+}> {
   let freedBytes = 0;
-  const bridge = getCacheBridge();
+  const clearedHistoryCount = getLocalHistory().length;
+  const historyBytes = getLocalHistoryBytes();
 
+  // Clearing cache also clears saved download history records
+  clearLocalHistory();
+  freedBytes += historyBytes;
+
+  const bridge = getCacheBridge();
   if (bridge?.clearAppCache) {
     try {
       const raw = bridge.clearAppCache();
@@ -99,5 +120,5 @@ export async function clearTemporaryCache(): Promise<{ freedBytes: number }> {
     /* ignore */
   }
 
-  return { freedBytes };
+  return { freedBytes, clearedHistoryCount };
 }

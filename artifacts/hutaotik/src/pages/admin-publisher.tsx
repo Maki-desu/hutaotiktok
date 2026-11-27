@@ -4,6 +4,7 @@ import {
   Archive,
   ArrowUpCircle,
   Bell,
+  BellRing,
   CheckCircle2,
   Clock,
   Database,
@@ -33,6 +34,20 @@ import {
 } from "lucide-react";
 import { apiUrl, saveAdminApiUrl } from "@/lib/api-url";
 import { isDirectApkInstallUrl, resolveReleaseDownloadUrl } from "@/lib/app-updates";
+import {
+  cancelNativeApkUpload,
+  consumePendingAdminUploadResult,
+  discardNativePickedApk,
+  hasAdminNotificationPermission,
+  isNativeAdminUploadAvailable,
+  openAdminExternalUrl,
+  openAdminNotificationSettings,
+  pickApkFileNative,
+  promptAdminNotificationsOnce,
+  requestAdminNotificationPermission,
+  uploadApkReleaseNative,
+  type PickedNativeApk,
+} from "@/lib/admin-upload";
 import { formatStorageBytes } from "@/lib/cache-storage";
 import {
   formatArchiveCountdown,
@@ -129,6 +144,8 @@ type PublishFeedback = {
   message: string;
   push?: PushStatus;
   warning?: string;
+  downloadUrl?: string;
+  versionName?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -257,11 +274,12 @@ function uploadMultipartWithProgress(
 
 export default function AdminPublisher() {
   const defaultCodeFromBuild = Number.parseInt(
-    import.meta.env.VITE_DEFAULT_RELEASE_VERSION_CODE ?? "36",
+    import.meta.env.VITE_DEFAULT_RELEASE_VERSION_CODE ?? "37",
     10,
   );
-  const defaultNameFromBuild = import.meta.env.VITE_DEFAULT_RELEASE_VERSION_NAME ?? "1.2.20";
+  const defaultNameFromBuild = import.meta.env.VITE_DEFAULT_RELEASE_VERSION_NAME ?? "1.2.21";
   const hasEmbeddedKey = EMBEDDED_ADMIN_KEY.length > 0;
+  const nativeUploadAvailable = isNativeAdminUploadAvailable();
 
   const [token, setToken] = useState(() => localStorage.getItem("hutaotik_release_admin_token") ?? "");
   const [serverUrl, setServerUrl] = useState(
@@ -288,8 +306,14 @@ export default function AdminPublisher() {
   const [changelog, setChangelog] = useState("");
   const [apkDeliveryMode, setApkDeliveryMode] = useState<"upload" | "link">("upload");
   const [apkFile, setApkFile] = useState<File | null>(null);
+  const [nativePickedApk, setNativePickedApk] = useState<PickedNativeApk | null>(null);
+  const [activeUploadRequestId, setActiveUploadRequestId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadStage, setUploadStage] = useState("");
+  const [uploadByteDetail, setUploadByteDetail] = useState("");
+  const [adminNotifGranted, setAdminNotifGranted] = useState<boolean>(() =>
+    hasAdminNotificationPermission(),
+  );
   const [downloadUrl, setDownloadUrl] = useState("");
   const [sha256, setSha256] = useState("");
   const [isMandatory, setIsMandatory] = useState(false);
@@ -442,6 +466,74 @@ export default function AdminPublisher() {
     }
   }, [isUnlocked, loadDatabase]);
 
+  useEffect(() => {
+    if (!nativeUploadAvailable) return;
+    promptAdminNotificationsOnce();
+
+    const syncAdminNativeState = () => {
+      setAdminNotifGranted(hasAdminNotificationPermission());
+      const pending = consumePendingAdminUploadResult();
+      if (!pending) return;
+      if (pending.status >= 200 && pending.status < 300 && isRecord(pending.data.release)) {
+        const publishedRelease = pending.data.release as unknown as AdminRelease;
+        const storageMode =
+          typeof pending.data.storageMode === "string" ? pending.data.storageMode : "server";
+        const hostNote =
+          storageMode === "github"
+            ? " (APK hosted permanently on GitHub Releases)"
+            : storageMode === "server"
+              ? " (APK uploaded & hosted directly on your API server)"
+              : "";
+        setResult({
+          message: `Background upload finished! Published v${publishedRelease.versionName} (Build ${publishedRelease.versionCode})${hostNote}.`,
+          push: isRecord(pending.data.push)
+            ? (pending.data.push as unknown as PushStatus)
+            : undefined,
+          warning: typeof pending.data.warning === "string" ? pending.data.warning : undefined,
+          downloadUrl: publishedRelease.downloadUrl,
+          versionName: publishedRelease.versionName,
+        });
+        void loadDatabase();
+      } else if (pending.error) {
+        setError(pending.error);
+      }
+    };
+
+    syncAdminNativeState();
+    window.addEventListener("focus", syncAdminNativeState);
+    return () => window.removeEventListener("focus", syncAdminNativeState);
+  }, [nativeUploadAvailable, loadDatabase]);
+
+  const handlePickNativeApk = async () => {
+    setError(null);
+    try {
+      const picked = await pickApkFileNative();
+      if (picked) {
+        if (nativePickedApk?.pickId && nativePickedApk.pickId !== picked.pickId) {
+          discardNativePickedApk(nativePickedApk.pickId);
+        }
+        setNativePickedApk(picked);
+        setApkFile(null);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not select APK file.");
+    }
+  };
+
+  const clearSelectedApk = () => {
+    if (nativePickedApk?.pickId) {
+      discardNativePickedApk(nativePickedApk.pickId);
+    }
+    setNativePickedApk(null);
+    setApkFile(null);
+  };
+
+  const selectedApkSummary = nativePickedApk
+    ? { name: nativePickedApk.name, size: nativePickedApk.size }
+    : apkFile
+      ? { name: apkFile.name, size: apkFile.size }
+      : null;
+
   const saveServerSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSavingServerUrl(true);
@@ -517,14 +609,64 @@ export default function AdminPublisher() {
         throw new Error("Enter a valid numeric Android version code.");
       }
 
-      if (isUpdate && !apkFile && link.length === 0) {
-        throw new Error("Upload a new .apk file, or switch to External Link to paste a download URL.");
+      const hasSelectedApk = Boolean(nativePickedApk || apkFile);
+      if (isUpdate && !hasSelectedApk && link.length === 0) {
+        throw new Error("Upload a new .apk file, or switch to Download Link to paste a URL.");
       }
 
       let statusCode = 200;
       let data: Record<string, unknown>;
 
-      if (isUpdate && apkFile) {
+      if (isUpdate && nativePickedApk && nativeUploadAvailable) {
+        const fields: Record<string, string> = {
+          versionCode: String(parsedCode),
+          versionName: versionName.trim(),
+          title: releaseTitle.trim(),
+          changelog: content,
+          isMandatory: String(isMandatory),
+        };
+        if (parsedMinCode !== null) {
+          fields.minSupportedVersionCode = String(parsedMinCode);
+        }
+        if (sha256.trim()) {
+          fields.sha256 = sha256.trim();
+        }
+
+        setUploadProgress(1);
+        setUploadStage(`Uploading ${nativePickedApk.name} in background…`);
+        setUploadByteDetail(
+          nativePickedApk.size > 0 ? `0 B / ${formatStorageBytes(nativePickedApk.size)}` : "",
+        );
+
+        const { requestId, promise } = uploadApkReleaseNative({
+          endpointUrl: apiUrl("/api/admin/app-updates"),
+          headers: getAdminHeaders(false),
+          fields,
+          pickId: nativePickedApk.pickId,
+          onProgress: (info) => {
+            setUploadProgress(info.percent);
+            if (info.stage) setUploadStage(info.stage);
+            const parts: string[] = [];
+            if (info.loadedBytes && info.totalBytes) {
+              parts.push(`${formatStorageBytes(info.loadedBytes)} / ${formatStorageBytes(info.totalBytes)}`);
+            }
+            if (info.etaSeconds && info.etaSeconds > 0) {
+              const mins = Math.floor(info.etaSeconds / 60);
+              const secs = info.etaSeconds % 60;
+              parts.push(mins > 0 ? `${mins}m ${secs}s left` : `${secs}s left`);
+            }
+            setUploadByteDetail(parts.join(" · "));
+          },
+        });
+        setActiveUploadRequestId(requestId);
+        const nativeResult = await promise;
+        statusCode = nativeResult.status;
+        data = nativeResult.data;
+        if (statusCode === 0 && nativeResult.error) {
+          throw new Error(nativeResult.error);
+        }
+        setUploadProgress(100);
+      } else if (isUpdate && apkFile) {
         const formData = new FormData();
         formData.append("apk", apkFile, apkFile.name || `hutaotik-${versionName.trim() || "update"}.apk`);
         formData.append("versionCode", String(parsedCode));
@@ -615,12 +757,14 @@ export default function AdminPublisher() {
           message: `Published v${publishedRelease.versionName} (Build ${publishedRelease.versionCode})${hostNote}!`,
           push,
           warning: typeof data.warning === "string" ? data.warning : undefined,
+          downloadUrl: publishedRelease.downloadUrl,
+          versionName: publishedRelease.versionName,
         });
         setVersionCode(String(publishedRelease.versionCode + 1));
         setVersionName(bumpPatch(publishedRelease.versionName));
         setReleaseTitle("");
         setChangelog("");
-        setApkFile(null);
+        clearSelectedApk();
         setDownloadUrl("");
         setSha256("");
         setIsMandatory(false);
@@ -639,8 +783,10 @@ export default function AdminPublisher() {
       setError(cause instanceof Error ? cause.message : "Could not publish.");
     } finally {
       setBusy(false);
+      setActiveUploadRequestId(null);
       setUploadProgress(null);
       setUploadStage("");
+      setUploadByteDetail("");
     }
   };
 
@@ -888,7 +1034,7 @@ export default function AdminPublisher() {
   };
 
   const directApkPreview =
-    Boolean(apkFile) ||
+    Boolean(selectedApkSummary) ||
     (downloadUrl.trim().length > 0 && isDirectApkInstallUrl(downloadUrl.trim(), `${serverUrl}/`));
 
   return (
@@ -1050,7 +1196,7 @@ export default function AdminPublisher() {
             )}
 
             {result && (
-              <div role="status" className="space-y-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs">
+              <div role="status" className="space-y-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs">
                 <p className="flex items-center gap-1.5 font-bold text-emerald-400">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                   {result.message}
@@ -1062,6 +1208,21 @@ export default function AdminPublisher() {
                   </p>
                 )}
                 {result.warning && <p className="text-amber-400">{result.warning}</p>}
+                {result.downloadUrl && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() =>
+                      openAdminExternalUrl(
+                        resolveReleaseDownloadUrl(result.downloadUrl!, `${serverUrl}/`).toString(),
+                      )
+                    }
+                    className="mt-1 h-9 w-full gap-1.5 rounded-xl bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Download Published {result.versionName ? `v${result.versionName} ` : ""}APK
+                  </Button>
+                )}
               </div>
             )}
 
@@ -1217,8 +1378,8 @@ export default function AdminPublisher() {
                                   : "border-border text-muted-foreground"
                               }`}
                             >
-                              {apkFile
-                                ? "Direct APK · Auto SHA-256"
+                              {selectedApkSummary
+                                ? "Direct APK · Background Upload"
                                 : downloadUrl.trim()
                                   ? directApkPreview
                                     ? "Direct APK · In-app installer"
@@ -1264,29 +1425,72 @@ export default function AdminPublisher() {
 
                           {apkDeliveryMode === "upload" ? (
                             <div className="space-y-2.5">
-                              {apkFile ? (
+                              {nativeUploadAvailable && !adminNotifGranted && (
+                                <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px]">
+                                  <span className="flex items-center gap-1.5 text-amber-300">
+                                    <BellRing className="h-3.5 w-3.5 shrink-0" />
+                                    Allow notifications to see the live upload progress bar in your status bar.
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void requestAdminNotificationPermission().then((granted) => {
+                                        setAdminNotifGranted(granted);
+                                        if (!granted) openAdminNotificationSettings();
+                                      });
+                                    }}
+                                    className="shrink-0 rounded-lg bg-amber-500/20 px-2.5 py-1 font-bold text-amber-200 hover:bg-amber-500/30"
+                                  >
+                                    Allow
+                                  </button>
+                                </div>
+                              )}
+
+                              {selectedApkSummary ? (
                                 <div className="flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3">
                                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
                                     <FileArchive className="h-5 w-5" />
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <p className="truncate text-xs font-bold text-foreground">
-                                      {apkFile.name}
+                                      {selectedApkSummary.name}
                                     </p>
                                     <p className="text-[11px] text-emerald-400">
-                                      {formatStorageBytes(apkFile.size)} · Ready to upload directly (no link needed)
+                                      {selectedApkSummary.size > 0
+                                        ? `${formatStorageBytes(selectedApkSummary.size)} · `
+                                        : ""}
+                                      Ready to upload in background (no link needed)
                                     </p>
                                   </div>
                                   <button
                                     type="button"
                                     disabled={busy}
-                                    onClick={() => setApkFile(null)}
+                                    onClick={clearSelectedApk}
                                     aria-label="Remove selected APK file"
                                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-background/60 hover:text-destructive disabled:opacity-50"
                                   >
                                     <X className="h-4 w-4" />
                                   </button>
                                 </div>
+                              ) : nativeUploadAvailable ? (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => void handlePickNativeApk()}
+                                  className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-5 text-center transition-colors hover:border-primary/70 hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-60"
+                                >
+                                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+                                    <Upload className="h-5 w-5" />
+                                  </div>
+                                  <div className="space-y-0.5">
+                                    <p className="text-xs font-bold text-foreground">
+                                      Tap to select your new <span className="font-mono text-primary">.apk</span> file
+                                    </p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      Uploads in background with live notification progress · Max 250 MB
+                                    </p>
+                                  </div>
+                                </button>
                               ) : (
                                 <label
                                   className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-5 text-center transition-colors hover:border-primary/70 hover:bg-primary/10 ${
@@ -1326,16 +1530,33 @@ export default function AdminPublisher() {
                               )}
 
                               {uploadProgress !== null && (
-                                <div className="space-y-1.5 rounded-xl border border-primary/30 bg-primary/5 p-3">
-                                  <div className="flex items-center justify-between text-[11px] font-semibold">
+                                <div className="space-y-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
+                                  <div className="flex items-center justify-between gap-2 text-[11px] font-semibold">
                                     <span className="truncate text-foreground">{uploadStage || "Uploading APK…"}</span>
-                                    <span className="font-mono text-primary">{uploadProgress}%</span>
+                                    <span className="shrink-0 font-mono text-primary">{uploadProgress}%</span>
                                   </div>
                                   <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
                                     <div
                                       className="h-full rounded-full bg-primary transition-all duration-200"
-                                      style={{ width: `${uploadProgress}%` }}
+                                      style={{ width: `${Math.max(uploadProgress, 3)}%` }}
                                     />
+                                  </div>
+                                  <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                    <span className="truncate">
+                                      {uploadByteDetail ||
+                                        (nativeUploadAvailable
+                                          ? "Uploading in background — you can leave the app & track in notifications."
+                                          : "Uploading to server…")}
+                                    </span>
+                                    {activeUploadRequestId && (
+                                      <button
+                                        type="button"
+                                        onClick={() => cancelNativeApkUpload(activeUploadRequestId)}
+                                        className="shrink-0 font-bold text-destructive hover:underline"
+                                      >
+                                        Cancel
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               )}
@@ -1356,12 +1577,12 @@ export default function AdminPublisher() {
                                 value={downloadUrl}
                                 onChange={(e) => {
                                   setDownloadUrl(e.target.value);
-                                  if (e.target.value.trim().length > 0 && apkFile) {
-                                    setApkFile(null);
+                                  if (e.target.value.trim().length > 0 && selectedApkSummary) {
+                                    clearSelectedApk();
                                   }
                                 }}
-                                placeholder="https://github.com/.../releases/download/v1.2.19/hutaotik.apk"
-                                required={!apkFile}
+                                placeholder="https://github.com/.../releases/download/v1.2.21/hutaotik.apk"
+                                required={!selectedApkSummary}
                               />
                               <p className="text-[11px] text-muted-foreground">
                                 Optional alternative: paste a direct .apk URL (in-app installer) or Google Drive / MediaFire share link (opens browser).
@@ -1430,7 +1651,7 @@ export default function AdminPublisher() {
                                 id="release-sha256"
                                 value={sha256}
                                 onChange={(e) => setSha256(e.target.value)}
-                                placeholder={apkFile ? "Auto-calculated from uploaded APK" : "64-char hex checksum"}
+                                placeholder={selectedApkSummary ? "Auto-calculated from uploaded APK" : "64-char hex checksum"}
                                 maxLength={64}
                                 className="h-9 font-mono text-xs"
                               />
@@ -1503,8 +1724,8 @@ export default function AdminPublisher() {
                           </>
                         ) : mode === "update" ? (
                           <>
-                            {apkFile ? <Upload className="h-4 w-4" /> : <ArrowUpCircle className="h-4 w-4" />}
-                            {apkFile
+                            {selectedApkSummary ? <Upload className="h-4 w-4" /> : <ArrowUpCircle className="h-4 w-4" />}
+                            {selectedApkSummary
                               ? `Upload APK & Publish v${versionName || "?"}`
                               : `Publish v${versionName || "?"} to All Users`}
                           </>
@@ -1523,9 +1744,14 @@ export default function AdminPublisher() {
                 {mode === "update" && (
                   <Card className="rounded-2xl border-border bg-card/70">
                     <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Smartphone className="h-4 w-4 text-primary" />
-                        User Update Popup Preview
+                      <CardTitle className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+                        <span className="flex items-center gap-2">
+                          <Smartphone className="h-4 w-4 text-primary" />
+                          User Update Popup Preview
+                        </span>
+                        <Badge variant="outline" className="text-[10px]">
+                          Preview Only
+                        </Badge>
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -1647,20 +1873,38 @@ export default function AdminPublisher() {
                             ) : (
                               <Globe className="h-3.5 w-3.5 shrink-0 text-amber-400" />
                             )}
-                            <a
-                              href={resolveReleaseDownloadUrl(rel.downloadUrl, `${serverUrl}/`).toString()}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="min-w-0 flex-1 truncate underline underline-offset-2 hover:text-primary"
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openAdminExternalUrl(
+                                  resolveReleaseDownloadUrl(rel.downloadUrl, `${serverUrl}/`).toString(),
+                                )
+                              }
+                              className="min-w-0 flex-1 truncate text-left underline underline-offset-2 hover:text-primary"
                             >
                               {rel.hasUploadedApk
                                 ? `Direct APK upload (${rel.downloadUrl})`
                                 : rel.downloadUrl}
-                            </a>
+                            </button>
                             <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
                           </div>
 
                           <div className="flex flex-wrap gap-2 pt-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                openAdminExternalUrl(
+                                  resolveReleaseDownloadUrl(rel.downloadUrl, `${serverUrl}/`).toString(),
+                                )
+                              }
+                              className="h-8 gap-1.5 rounded-lg border-emerald-500/40 bg-emerald-500/10 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                              Download
+                            </Button>
+
                             <Button
                               type="button"
                               size="sm"

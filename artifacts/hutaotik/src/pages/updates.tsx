@@ -16,8 +16,8 @@ import {
   getInstalledAppVersion,
   isDirectApkInstallUrl,
   isUpdateNewer,
+  openReleaseDownloadInBrowser,
   registerAppUpdateProgressListener,
-  resolveReleaseDownloadUrl,
   startAppUpdateInstall,
   toDownloadProgressState,
   type AppUpdateProgressEvent,
@@ -46,6 +46,7 @@ export default function Updates() {
   const [checking, setChecking] = useState(true);
   const [checkError, setCheckError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingReleaseName, setDownloadingReleaseName] = useState<string>("");
   const [installError, setInstallError] = useState<string | null>(null);
   const [progressEvent, setProgressEvent] = useState<AppUpdateProgressEvent | null>(null);
 
@@ -94,22 +95,35 @@ export default function Updates() {
   const hasUpdate = latest !== null && isUpdateNewer(latest.versionCode, installed.versionCode);
   const isDirectApk = latest ? isDirectApkInstallUrl(latest.downloadUrl) : false;
 
+  const handleInstallRelease = (target: AvailableRelease) => {
+    setInstallError(null);
+    try {
+      const outcome = startAppUpdateInstall(target);
+      if (outcome === "started") {
+        setDownloading(true);
+        setDownloadingReleaseName(target.versionName);
+        setProgressEvent({ status: "downloading", percent: 2, message: "Starting APK download…" });
+        return;
+      }
+      if (outcome === "permission_required") {
+        setInstallError("Allow HutaoTik to install unknown apps in Android settings, then tap Download again.");
+        return;
+      }
+      if (outcome === "failed") {
+        setInstallError("Could not start the APK download. Try opening the link in your browser.");
+      }
+    } catch (cause) {
+      setInstallError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not start the APK download. Try opening the link in your browser.",
+      );
+    }
+  };
+
   const handleInstallLatest = () => {
     if (!latest) return;
-    setInstallError(null);
-    const outcome = startAppUpdateInstall(latest);
-    if (outcome === "started" && isDirectApk) {
-      setDownloading(true);
-      setProgressEvent({ status: "downloading", percent: 2, message: "Starting APK download…" });
-      return;
-    }
-    if (outcome === "permission_required") {
-      setInstallError("Allow HutaoTik to install unknown apps in Android settings, then tap Update again.");
-      return;
-    }
-    if (outcome === "failed") {
-      setInstallError("Could not start the APK download. Try opening the link in your browser.");
-    }
+    handleInstallRelease(latest);
   };
 
   return (
@@ -202,13 +216,7 @@ export default function Updates() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() =>
-                    window.open(
-                      resolveReleaseDownloadUrl(latest.downloadUrl).toString(),
-                      "_blank",
-                      "noopener,noreferrer",
-                    )
-                  }
+                  onClick={() => openReleaseDownloadInBrowser(latest.downloadUrl)}
                   className="h-8 w-full gap-1.5 text-xs"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
@@ -242,14 +250,28 @@ export default function Updates() {
             </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5">
-            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-emerald-400">You&apos;re up to date!</p>
-              <p className="text-[11px] text-muted-foreground">
-                HutaoTik v{installed.versionName} is the newest available version.
-              </p>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-emerald-400">You&apos;re up to date!</p>
+                <p className="text-[11px] text-muted-foreground">
+                  HutaoTik v{installed.versionName} is the newest available version.
+                </p>
+              </div>
             </div>
+            {downloading && progressEvent && (
+              <DownloadProgressCard
+                title={`Downloading HutaoTik v${downloadingReleaseName || installed.versionName}…`}
+                progress={toDownloadProgressState(progressEvent)}
+                className=""
+              />
+            )}
+            {installError && (
+              <p role="alert" className="text-xs text-destructive">
+                {installError}
+              </p>
+            )}
           </div>
         )}
       </section>
@@ -261,37 +283,62 @@ export default function Updates() {
             Release Changelog History
           </h2>
           <div className="space-y-3">
-            {history.map((item) => (
-              <div
-                key={item.id}
-                className="rounded-xl border border-border bg-background/60 p-3.5 space-y-1.5"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-bold text-foreground">
-                      v{item.versionName}
-                    </span>
-                    <Badge variant="outline" className="font-mono text-[10px]">
-                      Build {item.versionCode}
-                    </Badge>
-                    {item.versionCode === installed.versionCode && (
-                      <Badge className="bg-primary/15 text-primary border-primary/30 text-[10px]">
-                        Installed
+            {history.map((item) => {
+              const itemDirect = isDirectApkInstallUrl(item.downloadUrl);
+              return (
+                <div
+                  key={item.id}
+                  className="rounded-xl border border-border bg-background/60 p-3.5 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-bold text-foreground">
+                        v{item.versionName}
+                      </span>
+                      <Badge variant="outline" className="font-mono text-[10px]">
+                        Build {item.versionCode}
                       </Badge>
-                    )}
+                      {item.versionCode === installed.versionCode && (
+                        <Badge className="bg-primary/15 text-primary border-primary/30 text-[10px]">
+                          Installed
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatReleaseDate(item.createdAt)}
+                    </span>
                   </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {formatReleaseDate(item.createdAt)}
-                  </span>
+                  {item.title && (
+                    <p className="text-xs font-semibold text-primary">{item.title}</p>
+                  )}
+                  <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                    {item.changelog}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={downloading}
+                      onClick={() => handleInstallRelease(item)}
+                      className="h-8 gap-1.5 rounded-lg border-primary/40 text-xs font-semibold text-primary hover:bg-primary/10"
+                    >
+                      {itemDirect ? (
+                        <>
+                          <Download className="h-3.5 w-3.5" />
+                          Download v{item.versionName} APK
+                        </>
+                      ) : (
+                        <>
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Open v{item.versionName} Link
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
-                {item.title && (
-                  <p className="text-xs font-semibold text-primary">{item.title}</p>
-                )}
-                <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                  {item.changelog}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}

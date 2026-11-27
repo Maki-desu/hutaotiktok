@@ -17,8 +17,8 @@ import { logger } from "../lib/logger";
 import { notifyAppUpdateDevices, type PushResult } from "../lib/push-notifications";
 
 const router: IRouter = Router();
-const DEFAULT_APP_VERSION_CODE = 36;
-const DEFAULT_APP_VERSION_NAME = "1.2.20";
+const DEFAULT_APP_VERSION_CODE = 40;
+const DEFAULT_APP_VERSION_NAME = "1.2.24";
 const MAX_APK_UPLOAD_BYTES = 250 * 1024 * 1024;
 const APK_STORAGE_DIR = path.resolve(
   process.env.APK_STORAGE_DIR || path.join(process.cwd(), "uploads", "app-releases"),

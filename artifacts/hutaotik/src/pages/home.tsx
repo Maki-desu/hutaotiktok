@@ -644,6 +644,17 @@ export default function Home() {
         endPercent: 100,
       });
 
+      saveLocalHistoryRecord({
+        title: video.title || "TikTok Photos",
+        author: video.author,
+        authorUsername: video.authorUsername,
+        thumbnail: video.photos[0] || video.thumbnail || null,
+        quality: "Photos ZIP",
+        sourceUrl: submittedUrl || url,
+        downloadUrl: null,
+        platform: "tiktok",
+      });
+
       finishLiveDownloadNotif(zipTaskId, true, filename, folderName);
       setDownloadSuccessInfo({ filename, folder: folderName });
 

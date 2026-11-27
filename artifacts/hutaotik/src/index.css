@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@500;600;700;800&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
@@ -149,26 +148,26 @@
   --chart-4: 0 0% 45%;
   --chart-5: 0 0% 25%;
 
-  --app-font-sans: 'Inter', sans-serif;
-  --app-font-serif: 'Syne', sans-serif;
-  --app-font-mono: Menlo, monospace;
+  --app-font-sans: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  --app-font-serif: 'Outfit', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --app-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --radius: 0.75rem;
 
-  --shadow-2xs: 0px 0px 5px 0px hsla(24, 95%, 53%, 0.1);
-  --shadow-xs: 0px 0px 10px 0px hsla(24, 95%, 53%, 0.15);
-  --shadow-sm: 0px 0px 15px 0px hsla(24, 95%, 53%, 0.2);
-  --shadow: 0px 0px 20px 0px hsla(24, 95%, 53%, 0.3);
-  --shadow-md: 0px 0px 25px 0px hsla(24, 95%, 53%, 0.4);
-  --shadow-lg: 0px 0px 30px 0px hsla(24, 95%, 53%, 0.5);
-  --shadow-xl: 0px 0px 40px 0px hsla(24, 95%, 53%, 0.6);
-  --shadow-2xl: 0px 0px 50px 0px hsla(24, 95%, 53%, 0.7);
+  --shadow-2xs: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
+  --shadow-xs: 0 2px 6px -1px rgba(0, 0, 0, 0.42), 0 1px 2px 0 rgba(0, 0, 0, 0.32);
+  --shadow-sm: 0 4px 14px -2px rgba(0, 0, 0, 0.48), 0 2px 4px -1px rgba(0, 0, 0, 0.36);
+  --shadow: 0 10px 26px -6px rgba(0, 0, 0, 0.54), 0 3px 8px -2px rgba(0, 0, 0, 0.38);
+  --shadow-md: 0 14px 32px -8px rgba(0, 0, 0, 0.60), 0 4px 12px -2px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 20px 44px -10px rgba(0, 0, 0, 0.68), 0 6px 16px -4px rgba(0, 0, 0, 0.46);
+  --shadow-xl: 0 28px 58px -12px rgba(0, 0, 0, 0.74);
+  --shadow-2xl: 0 36px 72px -14px rgba(0, 0, 0, 0.80);
 
-  --tracking-normal: 0em;
+  --tracking-normal: -0.006em;
   --spacing: 0.25rem;
 
-  --spring-bounce: cubic-bezier(0.22, 1.14, 0.36, 1);
-  --spring-snappy: cubic-bezier(0.22, 1.08, 0.36, 1);
+  --spring-bounce: cubic-bezier(0.22, 1.24, 0.36, 1);
+  --spring-snappy: cubic-bezier(0.22, 1.14, 0.36, 1);
   --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 
   --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
@@ -243,8 +242,14 @@
   * {
     @apply border-border;
   }
+  html,
+  body {
+    overflow-x: clip;
+  }
   body {
     @apply font-sans antialiased bg-background text-foreground;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   .app-shell {
     background-color: hsl(var(--background));
@@ -259,16 +264,41 @@
     background:
       linear-gradient(
         to bottom,
-        rgb(0 0 0 / 0.28) 0%,
-        rgb(0 0 0 / 0.14) 32%,
-        hsl(var(--background) / 0) 84%,
-        hsl(var(--background) / 0.55) 97%,
+        rgb(0 0 0 / 0.62) 0%,
+        rgb(0 0 0 / 0.34) 28%,
+        rgb(0 0 0 / 0.14) 56%,
+        hsl(var(--background) / 0.45) 86%,
+        hsl(var(--background) / 0.85) 96%,
         hsl(var(--background)) 100%
       );
   }
+  .hero-text-shadow {
+    text-shadow:
+      0 2px 10px rgba(0, 0, 0, 0.72),
+      0 1px 2px rgba(0, 0, 0, 0.88);
+  }
+  .nav-pill-label {
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.82);
+  }
+  .nav-pill-btn {
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+      0 4px 14px -2px rgba(0, 0, 0, 0.56),
+      0 1px 3px rgba(0, 0, 0, 0.68);
+  }
   h1, h2, h3, h4, h5, h6, .font-syne {
     font-family: var(--app-font-serif);
+    letter-spacing: -0.02em;
   }
+}
+
+/* Modern elevated shadows on cards & panels in default/normal style */
+:root:not([data-ui-style="liquid-glass"]):not([data-ui-style="minimal"]) .app-shell main .bg-card,
+:root:not([data-ui-style="liquid-glass"]):not([data-ui-style="minimal"]) .app-shell main details.settings-disclosure {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+    0 10px 28px -10px rgba(0, 0, 0, 0.62),
+    0 2px 6px -1px rgba(0, 0, 0, 0.42);
 }
 
 html.theme-transition::after {
@@ -302,80 +332,224 @@ html.theme-transition::after {
     color 200ms ease;
 }
 
+/* ── iPhone / iOS 26 Liquid Glass Design System ─────────────── */
+.liquid-glass-backdrop {
+  display: none;
+}
+
+:root[data-ui-style="liquid-glass"] .liquid-glass-backdrop {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(62% 48% at 14% 18%, hsl(var(--primary) / 0.34) 0%, transparent 72%),
+    radial-gradient(54% 46% at 88% 28%, hsla(208, 98%, 64%, 0.24) 0%, transparent 72%),
+    radial-gradient(58% 50% at 76% 84%, hsl(var(--primary) / 0.26) 0%, transparent 72%),
+    radial-gradient(48% 42% at 18% 78%, hsla(274, 92%, 68%, 0.20) 0%, transparent 72%);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell > :not(.liquid-glass-backdrop) {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-ui-style="liquid-glass"] .hero-banner-scrim {
+  background:
+    linear-gradient(
+      to bottom,
+      rgb(0 0 0 / 0.52) 0%,
+      rgb(0 0 0 / 0.24) 34%,
+      hsl(var(--background) / 0.08) 68%,
+      hsl(var(--background) / 0.52) 93%,
+      hsl(var(--background) / 0.84) 100%
+    );
+}
+
+/* iPhone Liquid Glass Floating Nav Pills (smoked crystal for crisp contrast over any banner) */
+:root[data-ui-style="liquid-glass"] .nav-pill-btn {
+  border-radius: 9999px !important;
+  background-color: rgba(12, 14, 22, 0.56) !important;
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.05) 52%,
+    rgba(0, 0, 0, 0.14) 100%
+  ) !important;
+  border-color: rgba(255, 255, 255, 0.30) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.48),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.12),
+    0 6px 18px -4px rgba(0, 0, 0, 0.64),
+    0 2px 5px rgba(0, 0, 0, 0.55) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.06);
+  backdrop-filter: blur(18px) saturate(190%) brightness(1.06);
+}
+
+:root[data-ui-style="liquid-glass"] .nav-pill-btn.nav-pill-active {
+  background-color: hsl(var(--primary) / 0.42) !important;
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.32) 0%,
+    hsl(var(--primary) / 0.28) 48%,
+    rgba(0, 0, 0, 0.18) 100%
+  ) !important;
+  border-color: hsl(var(--primary) / 0.78) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.58),
+    inset 0 -1px 0 0 hsl(var(--primary) / 0.40),
+    0 8px 22px -4px hsl(var(--primary) / 0.50),
+    0 4px 12px rgba(0, 0, 0, 0.55) !important;
+}
+
+/* iPhone Liquid Glass Cards, Panels, Disclosures & Floating Surfaces */
 :root[data-ui-style="liquid-glass"] .app-shell main section,
 :root[data-ui-style="liquid-glass"] .app-shell main .bg-card,
-:root[data-ui-style="liquid-glass"] .app-shell main .bg-background {
+:root[data-ui-style="liquid-glass"] .app-shell main details.settings-disclosure {
   position: relative;
-  isolation: isolate;
   overflow: hidden;
-  background-color: hsl(var(--card) / 0.46);
+  border-radius: 1.5rem;
+  background-color: rgba(255, 255, 255, 0.075) !important;
   background-image:
-    linear-gradient(135deg, hsl(var(--foreground) / 0.16) 0%, hsl(var(--foreground) / 0.04) 22%, transparent 46%),
-    radial-gradient(circle at top left, hsl(var(--foreground) / 0.22) 0%, transparent 38%),
-    linear-gradient(315deg, hsl(var(--primary) / 0.08), transparent 58%);
-  border-color: hsl(var(--foreground) / 0.18);
+    linear-gradient(
+      165deg,
+      rgba(255, 255, 255, 0.19) 0%,
+      rgba(255, 255, 255, 0.055) 28%,
+      rgba(255, 255, 255, 0.02) 62%,
+      rgba(255, 255, 255, 0.075) 100%
+    ),
+    radial-gradient(120% 70% at 10% 0%, rgba(255, 255, 255, 0.16) 0%, transparent 55%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
   box-shadow:
-    inset 0 1px 0 hsl(var(--foreground) / 0.26),
-    inset 0 -1px 0 hsl(var(--foreground) / 0.07),
-    0 18px 40px hsl(0 0% 0% / 0.25),
-    0 0 0 1px hsl(var(--foreground) / 0.04);
-  -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(1.08);
-  backdrop-filter: blur(28px) saturate(160%) brightness(1.08);
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.44),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.09),
+    0 18px 40px -14px rgba(0, 0, 0, 0.50),
+    0 4px 12px -2px rgba(0, 0, 0, 0.26) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(195%) brightness(1.08);
+  backdrop-filter: blur(22px) saturate(195%) brightness(1.08);
 }
 
+/* Razor-sharp specular refractive 1px crystal rim (Apple iOS 26 signature) */
 :root[data-ui-style="liquid-glass"] .app-shell main section::before,
 :root[data-ui-style="liquid-glass"] .app-shell main .bg-card::before,
-:root[data-ui-style="liquid-glass"] .app-shell main .bg-background::before {
-  content: "";
-  position: absolute;
-  inset: 1px;
-  border-radius: inherit;
-  background: linear-gradient(120deg, hsl(var(--foreground) / 0.12), transparent 28%, transparent 62%, hsl(var(--foreground) / 0.08));
-  pointer-events: none;
-  z-index: -1;
-}
-
-:root[data-ui-style="liquid-glass"] .app-shell main section {
-  background-color: hsl(var(--card) / 0.38);
-}
-
-:root[data-ui-style="liquid-glass"] .app-shell main button,
-:root[data-ui-style="liquid-glass"] .app-shell main [role="combobox"] {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  border-color: hsl(var(--foreground) / 0.18);
-  background-color: hsl(var(--card) / 0.28);
-  background-image: linear-gradient(145deg, hsl(var(--foreground) / 0.1), transparent 60%);
-  box-shadow:
-    inset 0 1px 0 hsl(var(--foreground) / 0.18),
-    0 8px 18px hsl(0 0% 0% / 0.18),
-    0 0 0 1px hsl(var(--foreground) / 0.03);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  backdrop-filter: blur(16px) saturate(140%);
-}
-
-:root[data-ui-style="liquid-glass"] .app-shell main button::before,
-:root[data-ui-style="liquid-glass"] .app-shell main [role="combobox"]::before {
+:root[data-ui-style="liquid-glass"] .app-shell main details.settings-disclosure::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(130deg, hsl(var(--foreground) / 0.16), transparent 42%, hsl(var(--foreground) / 0.06));
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.56) 0%,
+    rgba(255, 255, 255, 0.16) 26%,
+    rgba(255, 255, 255, 0.03) 56%,
+    rgba(255, 255, 255, 0.22) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
   pointer-events: none;
-  z-index: -1;
+  z-index: 2;
 }
 
-:root[data-ui-style="liquid-glass"] .app-shell main button.bg-primary {
-  background-image: linear-gradient(145deg, hsl(var(--foreground) / 0.22), transparent 62%);
+/* Inner nested glass wells & input fields (translucent tint without stacking redundant GPU blur FBOs) */
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-background,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-background\/60,
+:root[data-ui-style="liquid-glass"] .app-shell main .bg-background\/70,
+:root[data-ui-style="liquid-glass"] .app-shell main input,
+:root[data-ui-style="liquid-glass"] .app-shell main textarea {
+  background-color: rgba(18, 18, 22, 0.42) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
   box-shadow:
-    inset 0 1px 0 hsl(var(--foreground) / 0.34),
-    0 10px 22px hsl(var(--primary) / 0.24),
-    0 0 0 1px hsl(var(--primary) / 0.18);
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
-:root[data-ui-style="liquid-glass"] .app-shell main button.bg-primary::before,
-:root[data-ui-style="liquid-glass"] .app-shell main .bg-primary::before {
-  background: linear-gradient(130deg, hsl(var(--foreground) / 0.2), transparent 46%, hsl(var(--primary) / 0.12));
+/* iPhone Liquid Glass Buttons & Comboboxes (avoid nested GPU backdrop-filter inside blurred cards) */
+:root[data-ui-style="liquid-glass"] .app-shell main button,
+:root[data-ui-style="liquid-glass"] .app-shell main [role="combobox"],
+:root[data-ui-style="liquid-glass"] .coffee-fab {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background-color: rgba(255, 255, 255, 0.10);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.21) 0%,
+    rgba(255, 255, 255, 0.045) 55%,
+    rgba(255, 255, 255, 0.085) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.10),
+    0 10px 22px -8px rgba(0, 0, 0, 0.40);
+}
+
+:root[data-ui-style="liquid-glass"] .coffee-fab {
+  -webkit-backdrop-filter: blur(20px) saturate(195%) brightness(1.08);
+  backdrop-filter: blur(20px) saturate(195%) brightness(1.08);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell main button:not(:disabled):active,
+:root[data-ui-style="liquid-glass"] .coffee-fab:active {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.62),
+    inset 0 0 16px rgba(255, 255, 255, 0.16),
+    0 4px 12px -4px rgba(0, 0, 0, 0.45);
+}
+
+/* Tinted Liquid Glass Primary Action Buttons (iPhone translucent tint glow) */
+:root[data-ui-style="liquid-glass"] .app-shell main button.bg-primary {
+  background-color: hsl(var(--primary) / 0.84) !important;
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.36) 0%,
+    hsl(var(--primary) / 0.15) 45%,
+    rgba(0, 0, 0, 0.10) 100%
+  ) !important;
+  border-color: rgba(255, 255, 255, 0.36) !important;
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.58),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.18),
+    0 12px 26px -6px hsl(var(--primary) / 0.50),
+    0 2px 6px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* iPhone Liquid Glass Dialogs, Popovers, Dropdowns & Toasts */
+:root[data-ui-style="liquid-glass"] .dialog-bounce-content,
+:root[data-ui-style="liquid-glass"] .dropdown-motion,
+:root[data-ui-style="liquid-glass"] .toast-bounce {
+  background-color: rgba(24, 24, 28, 0.68) !important;
+  background-image:
+    linear-gradient(
+      165deg,
+      rgba(255, 255, 255, 0.20) 0%,
+      rgba(255, 255, 255, 0.05) 34%,
+      rgba(255, 255, 255, 0.015) 68%,
+      rgba(255, 255, 255, 0.08) 100%
+    ) !important;
+  border: 1px solid rgba(255, 255, 255, 0.26) !important;
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.48),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.10),
+    0 24px 56px -12px rgba(0, 0, 0, 0.66) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(205%) brightness(1.10);
+  backdrop-filter: blur(24px) saturate(205%) brightness(1.10);
+}
+
+:root[data-ui-style="liquid-glass"] .app-shell footer {
+  background-color: rgba(255, 255, 255, 0.03);
+  border-top-color: rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
 }
 
 :root[data-ui-style="soft-glow"] .app-shell main section,
@@ -759,29 +933,83 @@ button, a {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ── Smooth, Subtle Spring Button Press (GPU Composited) ─────── */
+/* ── Smooth, Tactile Spring Button Animations (GPU Composited) ─── */
 button, [role="button"], .interactive-element {
   transition:
-    transform 260ms var(--spring-bounce),
+    transform 300ms var(--spring-bounce),
+    box-shadow 240ms var(--ease-smooth),
     border-color 200ms ease,
     background-color 200ms ease,
     color 180ms ease;
+}
+
+button svg,
+[role="button"] svg,
+.interactive-element svg {
+  transition: transform 260ms var(--spring-bounce);
+}
+
+.app-shell main button.bg-primary:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.26),
+    0 6px 18px -4px hsl(var(--primary) / 0.48),
+    0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
 @media (hover: hover) {
   button:not(:disabled):hover,
   [role="button"]:not([aria-disabled="true"]):hover,
   .interactive-element:hover {
-    transform: translate3d(0, -1px, 0);
+    transform: translate3d(0, -1.5px, 0) scale(1.015);
+  }
+
+  .nav-pill-btn:not(:disabled):hover {
+    transform: translate3d(0, -2px, 0) scale(1.03);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.34),
+      0 8px 20px -4px rgba(0, 0, 0, 0.68),
+      0 2px 6px rgba(0, 0, 0, 0.65);
+  }
+
+  .app-shell main button.bg-primary:not(:disabled):hover {
+    transform: translate3d(0, -2px, 0) scale(1.02);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.36),
+      0 10px 24px -4px hsl(var(--primary) / 0.58),
+      0 4px 10px rgba(0, 0, 0, 0.42);
+  }
+
+  button:not(:disabled):hover > svg,
+  .nav-pill-btn:not(:disabled):hover > svg {
+    transform: scale(1.12);
   }
 }
 
 button:not(:disabled):active,
 [role="button"]:not([aria-disabled="true"]):active,
 .interactive-element:active {
-  transition-duration: 95ms;
+  transition-duration: 85ms;
   transition-timing-function: var(--ease-smooth);
-  transform: scale(0.97);
+  transform: translate3d(0, 1px, 0) scale(0.95);
+}
+
+button:not(:disabled):active > svg,
+.nav-pill-btn:not(:disabled):active > svg {
+  transition-duration: 85ms;
+  transform: scale(0.88) rotate(-4deg);
+}
+
+.nav-pill-btn:not(:disabled):active {
+  transform: translate3d(0, 1px, 0) scale(0.93);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.32),
+    0 2px 8px rgba(0, 0, 0, 0.65);
+}
+
+.app-shell main button.bg-primary:not(:disabled):active {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    0 2px 10px -2px hsl(var(--primary) / 0.55);
 }
 
 [role="menuitem"]:active,
@@ -1016,7 +1244,13 @@ summary:active {
 :root[data-bounce-animation="off"] .interactive-element:hover,
 :root[data-bounce-animation="off"] button:not(:disabled):active,
 :root[data-bounce-animation="off"] [role="button"]:not([aria-disabled="true"]):active,
-:root[data-bounce-animation="off"] .interactive-element:active {
+:root[data-bounce-animation="off"] .interactive-element:active,
+:root[data-bounce-animation="off"] button:not(:disabled):hover > svg,
+:root[data-bounce-animation="off"] button:not(:disabled):active > svg,
+:root[data-bounce-animation="off"] .nav-pill-btn:not(:disabled):hover,
+:root[data-bounce-animation="off"] .nav-pill-btn:not(:disabled):active,
+:root[data-bounce-animation="off"] .nav-pill-btn:not(:disabled):hover > svg,
+:root[data-bounce-animation="off"] .nav-pill-btn:not(:disabled):active > svg {
   transform: none;
 }
 

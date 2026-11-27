@@ -29,43 +29,61 @@ public class NotificationSyncJobService extends JobService {
     private static final ExecutorService SYNC_EXECUTOR = Executors.newSingleThreadExecutor();
 
     public static void schedule(Context context) {
-        Context appContext = context.getApplicationContext();
-        JobScheduler scheduler = (JobScheduler) appContext.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        if (scheduler == null) return;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && scheduler.getPendingJob(JOB_ID) != null) {
-            return;
-        }
-
-        ComponentName component = new ComponentName(appContext, NotificationSyncJobService.class);
-        JobInfo jobInfo = new JobInfo.Builder(JOB_ID, component)
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-            .setPeriodic(POLL_INTERVAL_MS)
-            .build();
-
         try {
+            Context appContext = context.getApplicationContext();
+            JobScheduler scheduler = (JobScheduler) appContext.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (scheduler == null) return;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && scheduler.getPendingJob(JOB_ID) != null) {
+                return;
+            }
+
+            ComponentName component = new ComponentName(appContext, NotificationSyncJobService.class);
+            JobInfo jobInfo = new JobInfo.Builder(JOB_ID, component)
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .setPeriodic(POLL_INTERVAL_MS)
+                .build();
+
             scheduler.schedule(jobInfo);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.w(TAG, "Could not schedule background update/announcement sync job.", e);
         }
     }
 
     public static void checkNowAsync(Context context, boolean allowAnnouncementPopup) {
-        Context appContext = context.getApplicationContext();
-        SYNC_EXECUTOR.execute(() -> runSync(appContext, allowAnnouncementPopup));
+        try {
+            Context appContext = context.getApplicationContext();
+            SYNC_EXECUTOR.execute(() -> {
+                try {
+                    runSync(appContext, allowAnnouncementPopup);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Background notification check failed safely.", t);
+                }
+            });
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
     public boolean onStartJob(JobParameters params) {
         Context appContext = getApplicationContext();
-        SYNC_EXECUTOR.execute(() -> {
-            try {
-                runSync(appContext, true);
-            } finally {
-                jobFinished(params, false);
-            }
-        });
-        return true;
+        try {
+            SYNC_EXECUTOR.execute(() -> {
+                try {
+                    runSync(appContext, true);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Scheduled notification sync failed safely.", t);
+                } finally {
+                    try {
+                        jobFinished(params, false);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     @Override
