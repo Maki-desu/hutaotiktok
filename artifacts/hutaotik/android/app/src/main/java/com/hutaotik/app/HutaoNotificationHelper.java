@@ -29,12 +29,14 @@ public final class HutaoNotificationHelper {
     public static final String KEY_API_BASE_URL = "api_base_url";
     public static final String KEY_LAST_UPDATE_CODE = "last_notified_update_code";
     public static final String KEY_LAST_ANNOUNCEMENT_ID = "last_notified_announcement_id";
+    public static final String KEY_LAST_CUSTOM_PUSH_ID = "last_notified_custom_push_id";
     public static final String DEFAULT_API_BASE_URL = "https://hutaotiktok-mja6.onrender.com";
 
     public static final String CHANNEL_DOWNLOAD_PROGRESS = "hutaotik_downloads_progress";
     public static final String CHANNEL_DOWNLOAD_COMPLETE = "hutaotik_downloads_complete";
     public static final String CHANNEL_UPDATES = "hutaotik_updates";
     public static final String CHANNEL_ANNOUNCEMENTS = "hutaotik_announcements";
+    public static final String CHANNEL_CUSTOM_PUSH = "hutaotik_custom_push";
 
     public static final String EXTRA_ROUTE = "hutaotik_route";
 
@@ -85,6 +87,14 @@ public final class HutaoNotificationHelper {
             );
             announcementsChannel.setDescription("Important announcements and news from HutaoTik");
             manager.createNotificationChannel(announcementsChannel);
+
+            NotificationChannel customPushChannel = new NotificationChannel(
+                CHANNEL_CUSTOM_PUSH,
+                "Custom Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            customPushChannel.setDescription("Custom alerts and messages sent by HutaoTik admins");
+            manager.createNotificationChannel(customPushChannel);
         } catch (Throwable ignored) {
         }
     }
@@ -351,6 +361,16 @@ public final class HutaoNotificationHelper {
         }
     }
 
+    /** Removes stale "update available" / "update ready" notifications once the app is up to date. */
+    public static void cancelUpdateNotifications(Context context) {
+        try {
+            NotificationManagerCompat manager = NotificationManagerCompat.from(context);
+            manager.cancel(8100);
+            manager.cancel(8150);
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static void showUpdateReadyToInstallNotification(
         Context context,
         Uri apkUri
@@ -418,6 +438,65 @@ public final class HutaoNotificationHelper {
 
         try {
             NotificationManagerCompat.from(context).notify(8200 + (announcementId % 500), builder.build());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void showCustomPushNotification(
+        Context context,
+        int pushId,
+        String title,
+        String body,
+        String accentType,
+        String targetRoute
+    ) {
+        if (pushId < 1 || !isAnnouncementsEnabled(context) || !hasNotificationPermission(context)) return;
+        SharedPreferences sp = prefs(context);
+        int lastId = sp.getInt(KEY_LAST_CUSTOM_PUSH_ID, -1);
+        if (pushId <= lastId) return;
+
+        String safeTitle = title != null && !title.trim().isEmpty() ? title.trim() : "HutaoTik Alert";
+        String safeBody = body != null ? body.trim() : "";
+        if (safeBody.isEmpty()) return;
+
+        int accentColor = COLOR_EMBER;
+        if ("warning".equalsIgnoreCase(accentType)) {
+            accentColor = COLOR_ROSE;
+        } else if ("update".equalsIgnoreCase(accentType)) {
+            accentColor = COLOR_BLUE;
+        } else if ("promo".equalsIgnoreCase(accentType)) {
+            accentColor = COLOR_EMERALD;
+        }
+
+        String safeRoute = "/";
+        if (targetRoute != null) {
+            String trimmed = targetRoute.trim();
+            if ("/updates".equals(trimmed) ||
+                "/suggestions".equals(trimmed) ||
+                "/history".equals(trimmed) ||
+                "/taotools".equals(trimmed) ||
+                "/settings".equals(trimmed) ||
+                "/".equals(trimmed)) {
+                safeRoute = trimmed;
+            }
+        }
+
+        ensureChannels(context);
+        int notifId = 8300 + (pushId % 500);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_CUSTOM_PUSH)
+            .setSmallIcon(R.drawable.ic_stat_announcement)
+            .setColor(accentColor)
+            .setContentTitle(safeTitle)
+            .setContentText(safeBody)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(safeBody))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setContentIntent(buildAppPendingIntent(context, safeRoute, notifId));
+
+        try {
+            NotificationManagerCompat.from(context).notify(notifId, builder.build());
+            sp.edit().putInt(KEY_LAST_CUSTOM_PUSH_ID, pushId).apply();
         } catch (Throwable ignored) {
         }
     }

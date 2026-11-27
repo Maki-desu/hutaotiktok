@@ -144,3 +144,24 @@ export async function notifyAnnouncementDevices(
     contextLabel: "announcement",
   });
 }
+
+export async function notifyCustomPushDevices(
+  pushId: number,
+  title: string,
+  body: string,
+  accentType: string,
+  targetRoute: string,
+): Promise<PushResult> {
+  return sendMulticastToRegisteredDevices({
+    title: title.trim().slice(0, 100) || "HutaoTik Alert",
+    body: body.trim().slice(0, 240),
+    channelId: "hutaotik_custom_push",
+    data: {
+      type: "custom_push",
+      pushId: String(pushId),
+      accentType,
+      route: targetRoute,
+    },
+    contextLabel: "custom push",
+  });
+}

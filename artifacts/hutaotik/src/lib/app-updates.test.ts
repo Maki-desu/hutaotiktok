@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isAvailableRelease,
   isDirectApkInstallUrl,
+  isReleaseAlreadyInstalled,
   isUpdateNewer,
   registerAppUpdateProgressListener,
   startAppUpdateInstall,
@@ -21,6 +22,20 @@ describe("app-updates client utilities", () => {
     expect(isUpdateNewer(31, 30)).toBe(true);
     expect(isUpdateNewer(30, 30)).toBe(false);
     expect(isUpdateNewer(29, 30)).toBe(false);
+  });
+
+  it("treats a release as installed when the build is not newer or the APK SHA-256 matches", () => {
+    const sha = "b".repeat(64);
+    expect(isReleaseAlreadyInstalled({ versionCode: 45, sha256: null }, { versionCode: 45 })).toBe(true);
+    expect(isReleaseAlreadyInstalled({ versionCode: 44, sha256: null }, { versionCode: 45 })).toBe(true);
+    expect(isReleaseAlreadyInstalled({ versionCode: 46, sha256: null }, { versionCode: 45 })).toBe(false);
+    // Admin typed Build 46 but the uploaded APK is the one already installed (same bytes)
+    expect(
+      isReleaseAlreadyInstalled({ versionCode: 46, sha256: sha.toUpperCase() }, { versionCode: 45, apkSha256: sha }),
+    ).toBe(true);
+    expect(
+      isReleaseAlreadyInstalled({ versionCode: 46, sha256: "c".repeat(64) }, { versionCode: 45, apkSha256: sha }),
+    ).toBe(false);
   });
 
   it("identifies direct APK URLs vs external share links", () => {

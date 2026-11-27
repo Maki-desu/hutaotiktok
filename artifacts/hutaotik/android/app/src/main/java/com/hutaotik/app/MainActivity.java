@@ -290,6 +290,16 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public String getInstalledAppInfo() {
+            return InstalledApkInfo.toJson(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void cancelUpdateNotifications() {
+            HutaoNotificationHelper.cancelUpdateNotifications(MainActivity.this);
+        }
+
+        @JavascriptInterface
         public boolean openExternalUrl(String rawUrl) {
             if (rawUrl == null || (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://"))) {
                 return false;
@@ -1332,6 +1342,24 @@ public class MainActivity extends BridgeActivity {
                 announcementId,
                 colorType,
                 content
+            );
+        }
+
+        @JavascriptInterface
+        public void notifyCustomPush(
+            int pushId,
+            String title,
+            String body,
+            String accentType,
+            String targetRoute
+        ) {
+            HutaoNotificationHelper.showCustomPushNotification(
+                MainActivity.this,
+                pushId,
+                title,
+                body,
+                accentType,
+                targetRoute
             );
         }
 

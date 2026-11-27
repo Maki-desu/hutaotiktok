@@ -30,6 +30,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ClipboardCheck,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { SiTiktok, SiFacebook, SiYoutube, SiX, SiPinterest, SiInstagram } from "react-icons/si";
@@ -105,6 +106,7 @@ export default function Home() {
   const { toast } = useToast();
 
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
   const lastFetchTime = useRef<number>(0);
   const lastSharedUrl = useRef<{ url: string; at: number } | null>(null);
   const dismissedClipboardUrlsRef = useRef<Set<string>>(new Set());
@@ -161,6 +163,16 @@ export default function Home() {
     setPlatform(nextPlatform);
     setError(null);
     setSubmittedUrl("");
+  };
+
+  const handleResetLink = () => {
+    fetchMutation.reset();
+    setUrl("");
+    setSubmittedUrl("");
+    setError(null);
+    setDownloadSuccessInfo(null);
+    setDownloadProgress({ percent: 0 });
+    urlInputRef.current?.focus();
   };
 
   const handleFetch = (inputUrl: string) => {
@@ -811,6 +823,7 @@ export default function Home() {
           <div className="relative flex-1">
             <Link2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <Input
+              ref={urlInputRef}
               data-testid="input-url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -837,8 +850,18 @@ export default function Home() {
                           ? "Paste an Instagram Reel or post link…"
                       : "Paste any TikTok video or photo link here…"
               }
-              className="pl-9 h-11 bg-background/60 border-border/60 rounded-xl text-sm focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary transition-all"
+              className="pl-9 pr-9 h-11 bg-background/60 border-border/60 rounded-xl text-sm focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary transition-all"
             />
+            {url.length > 0 && (
+              <button
+                type="button"
+                onClick={handleResetLink}
+                aria-label="Clear pasted link"
+                className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <Button
@@ -858,6 +881,21 @@ export default function Home() {
                 <span>Fetch</span>
               </>
             )}
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-end">
+          <Button
+            data-testid="button-reset-link"
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleResetLink}
+            disabled={!url && !submittedUrl && !error && !video}
+            className="h-8 rounded-lg border-border/70 bg-background/60 px-3 text-xs font-semibold text-muted-foreground hover:border-primary/50 hover:text-foreground disabled:opacity-45 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reset Link</span>
           </Button>
         </div>
 

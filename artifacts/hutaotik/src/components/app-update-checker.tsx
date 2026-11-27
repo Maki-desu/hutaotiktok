@@ -4,10 +4,10 @@ import { PushNotifications } from "@capacitor/push-notifications";
 import { ArrowUpCircle, ExternalLink, Loader2, ShieldAlert } from "lucide-react";
 import { apiUrl } from "@/lib/api-url";
 import {
+  clearUpdateNotifications,
   fetchLatestRelease,
-  getInstalledAppVersion,
   isDirectApkInstallUrl,
-  isUpdateNewer,
+  isReleaseInstalledOnDevice,
   openReleaseDownloadInBrowser,
   registerAppUpdateProgressListener,
   sendDeviceCheckIn,
@@ -17,6 +17,7 @@ import {
   type AvailableRelease,
 } from "@/lib/app-updates";
 import {
+  checkCustomPushNotifications,
   consumePendingNotificationRoute,
   promptNotificationPermissionOnce,
   syncNotificationsToNative,
@@ -42,9 +43,11 @@ export function AppUpdateChecker() {
 
   const checkForUpdate = useCallback(async () => {
     try {
-      const { versionCode } = getInstalledAppVersion();
       const latest = await fetchLatestRelease();
-      if (!latest || !isUpdateNewer(latest.versionCode, versionCode)) {
+      if (!latest || isReleaseInstalledOnDevice(latest)) {
+        // Already on the newest version: close any stale prompt and clear old update notifications.
+        clearUpdateNotifications();
+        setRelease((current) => (current && (!latest || current.versionCode <= latest.versionCode) ? null : current));
         return;
       }
       setRelease(latest);
@@ -69,11 +72,24 @@ export function AppUpdateChecker() {
 
     void sendDeviceCheckIn().catch(() => {});
     void checkForUpdate();
+    void checkCustomPushNotifications();
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void checkForUpdate();
+      if (document.visibilityState === "visible") {
+        void checkForUpdate();
+        void checkCustomPushNotifications();
+      }
     };
-    const onManualCheck = () => void checkForUpdate();
+    const onManualCheck = () => {
+      void checkForUpdate();
+      void checkCustomPushNotifications();
+    };
+
+    const customPushTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void checkCustomPushNotifications();
+      }
+    }, 60_000);
 
     window.addEventListener("focus", onManualCheck);
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -81,6 +97,7 @@ export function AppUpdateChecker() {
 
     return () => {
       window.clearTimeout(promptTimer);
+      window.clearInterval(customPushTimer);
       window.removeEventListener("focus", onManualCheck);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("hutaotik:check-update", onManualCheck);
@@ -131,6 +148,12 @@ export function AppUpdateChecker() {
         id: "hutaotik_announcements",
         name: "Announcements",
         description: "Important HutaoTik lobby announcements",
+        importance: 5,
+      });
+      await PushNotifications.createChannel({
+        id: "hutaotik_custom_push",
+        name: "Custom Alerts",
+        description: "Custom alerts and messages sent by HutaoTik admins",
         importance: 5,
       });
 

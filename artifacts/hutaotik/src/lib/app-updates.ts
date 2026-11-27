@@ -29,6 +29,8 @@ interface NativeUpdateBridge {
   installAppUpdate?(url: string, sha256: string): string;
   openExternalUrl?(url: string): boolean;
   getDeviceInfo?(): string;
+  getInstalledAppInfo?(): string;
+  cancelUpdateNotifications?(): void;
 }
 
 declare global {
@@ -39,15 +41,141 @@ declare global {
 
 const INSTALL_ID_KEY = "hutaotik_install_id";
 const LAST_CHECKIN_KEY = "hutaotik_last_checkin";
+const INSTALLED_RELEASE_KEY = "hutaotik_installed_release";
+const PENDING_INSTALL_KEY = "hutaotik_pending_update_install";
 const CHECKIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const progressListeners = new Set<(event: AppUpdateProgressEvent) => void>();
 
+export interface NativeInstalledAppInfo {
+  versionCode: number;
+  versionName: string;
+  lastUpdateTime: number;
+  apkSha256: string;
+}
+
+let cachedNativeInfo: NativeInstalledAppInfo | null | undefined;
+
+/** Real installed APK identity from Android PackageManager (null on web / older builds). */
+export function getNativeInstalledAppInfo(): NativeInstalledAppInfo | null {
+  if (cachedNativeInfo !== undefined) return cachedNativeInfo;
+  cachedNativeInfo = null;
+  try {
+    const bridge = getNativeUpdateBridge();
+    if (typeof bridge?.getInstalledAppInfo !== "function") return null;
+    const parsed = JSON.parse(bridge.getInstalledAppInfo()) as Partial<NativeInstalledAppInfo>;
+    const versionCode = Number(parsed.versionCode);
+    if (!Number.isSafeInteger(versionCode) || versionCode < 1) return null;
+    cachedNativeInfo = {
+      versionCode,
+      versionName: typeof parsed.versionName === "string" ? parsed.versionName.trim() : "",
+      lastUpdateTime: typeof parsed.lastUpdateTime === "number" ? parsed.lastUpdateTime : 0,
+      apkSha256:
+        typeof parsed.apkSha256 === "string" && /^[0-9a-f]{64}$/i.test(parsed.apkSha256)
+          ? parsed.apkSha256.toLowerCase()
+          : "",
+    };
+  } catch {
+    cachedNativeInfo = null;
+  }
+  return cachedNativeInfo;
+}
+
+function readJson<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeJson(key: string, value: unknown): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+/**
+ * Release Build number that this exact installed APK corresponds to. Remembered when the
+ * installed APK's SHA-256 matched a release, or when the app was updated right after the
+ * user started installing that release. Tied to the APK's lastUpdateTime so it resets
+ * automatically if a different APK is installed later.
+ */
+function getRecognizedReleaseCode(native: NativeInstalledAppInfo | null): number {
+  const stored = readJson<{ code?: number; lastUpdateTime?: number }>(INSTALLED_RELEASE_KEY);
+  if (!stored || !Number.isSafeInteger(stored.code)) return 0;
+  if (native && native.lastUpdateTime > 0 && stored.lastUpdateTime !== native.lastUpdateTime) {
+    return 0;
+  }
+  return stored.code ?? 0;
+}
+
+function rememberInstalledRelease(code: number, native: NativeInstalledAppInfo | null): void {
+  if (!Number.isSafeInteger(code) || code < 1) return;
+  if (code <= getRecognizedReleaseCode(native)) return;
+  writeJson(INSTALLED_RELEASE_KEY, { code, lastUpdateTime: native?.lastUpdateTime ?? 0 });
+}
+
+/** If the app was updated since the user tapped "Download & Install", that release is now installed. */
+function resolvePendingInstall(native: NativeInstalledAppInfo | null): void {
+  const pending = readJson<{ code?: number; lastUpdateTime?: number }>(PENDING_INSTALL_KEY);
+  if (!pending || !native || native.lastUpdateTime <= 0) return;
+  if (typeof pending.lastUpdateTime === "number" && native.lastUpdateTime > pending.lastUpdateTime) {
+    rememberInstalledRelease(Number(pending.code), native);
+    writeJson(PENDING_INSTALL_KEY, null);
+  }
+}
+
 export function getInstalledAppVersion(): { versionCode: number; versionName: string } {
-  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "40", 10);
-  const versionCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 40;
-  const versionName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.24").trim() || "1.2.24";
+  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "45", 10);
+  const bakedCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 45;
+  const bakedName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.29").trim() || "1.2.29";
+  const native = getNativeInstalledAppInfo();
+  resolvePendingInstall(native);
+  const versionCode = Math.max(native?.versionCode ?? bakedCode, getRecognizedReleaseCode(native));
+  const versionName = native?.versionName || bakedName;
   return { versionCode, versionName };
+}
+
+/**
+ * True when the given release is already installed: either its Build number is not newer,
+ * or the installed APK is byte-for-byte the same file (SHA-256 match).
+ */
+export function isReleaseAlreadyInstalled(
+  release: Pick<AvailableRelease, "versionCode" | "sha256">,
+  installed: { versionCode: number; apkSha256?: string | null },
+): boolean {
+  if (!isUpdateNewer(release.versionCode, installed.versionCode)) return true;
+  const releaseSha = release.sha256?.trim().toLowerCase() ?? "";
+  const installedSha = installed.apkSha256?.trim().toLowerCase() ?? "";
+  return releaseSha.length === 64 && releaseSha === installedSha;
+}
+
+/** Checks a release against this device and remembers SHA matches so future checks stay quiet. */
+export function isReleaseInstalledOnDevice(release: AvailableRelease): boolean {
+  const native = getNativeInstalledAppInfo();
+  const installed = getInstalledAppVersion();
+  const result = isReleaseAlreadyInstalled(release, {
+    versionCode: installed.versionCode,
+    apkSha256: native?.apkSha256,
+  });
+  if (result && isUpdateNewer(release.versionCode, installed.versionCode)) {
+    rememberInstalledRelease(release.versionCode, native);
+  }
+  return result;
+}
+
+/** Clears any stale "update available" / "update ready" system notifications. */
+export function clearUpdateNotifications(): void {
+  try {
+    getNativeUpdateBridge()?.cancelUpdateNotifications?.();
+  } catch {
+    /* optional native helper */
+  }
 }
 
 export function isUpdateNewer(releaseVersionCode: number, installedVersionCode: number): boolean {
@@ -351,6 +479,14 @@ export function startAppUpdateInstall(
 ): "started" | "opened_browser" | "permission_required" | "failed" {
   const downloadUrl = resolveReleaseDownloadUrl(release.downloadUrl).toString();
   trackReleaseDownload(release.id);
+
+  const nativeInfo = getNativeInstalledAppInfo();
+  if (nativeInfo && nativeInfo.lastUpdateTime > 0) {
+    writeJson(PENDING_INSTALL_KEY, {
+      code: release.versionCode,
+      lastUpdateTime: nativeInfo.lastUpdateTime,
+    });
+  }
 
   const bridge = getNativeUpdateBridge();
   if (

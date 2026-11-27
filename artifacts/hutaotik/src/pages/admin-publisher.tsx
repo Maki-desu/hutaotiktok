@@ -139,7 +139,30 @@ type AdminAnnouncement = {
   createdAt: string;
 };
 
-type PublishMode = "update" | "announcement";
+type CustomPushAccent = "info" | "update" | "warning" | "promo";
+type CustomPushRoute = "/" | "/updates" | "/suggestions" | "/history" | "/taotools" | "/settings";
+
+type AdminCustomPush = {
+  id: number;
+  title: string;
+  body: string;
+  accentType: CustomPushAccent;
+  targetRoute: CustomPushRoute;
+  fcmDeliveredCount: number;
+  fcmDeviceCount: number;
+  createdAt: string;
+};
+
+const CUSTOM_PUSH_ROUTE_LABELS: Record<CustomPushRoute, string> = {
+  "/": "Lobby (Home)",
+  "/updates": "App Updates",
+  "/suggestions": "Suggestions Box",
+  "/history": "Download History",
+  "/taotools": "TaoTools Suite",
+  "/settings": "Settings",
+};
+
+type PublishMode = "update" | "announcement" | "push";
 type PublishFeedback = {
   message: string;
   push?: PushStatus;
@@ -181,12 +204,21 @@ async function readApiResponse(response: Response): Promise<Record<string, unkno
     data = JSON.parse(body);
   } catch (cause) {
     if (body.trimStart().startsWith("<")) {
-      if (
-        response.status === 404 &&
-        new URL(response.url).pathname.endsWith("/api/admin/app-updates")
-      ) {
+      const failedPath = (() => {
+        try {
+          return new URL(response.url).pathname;
+        } catch {
+          return "";
+        }
+      })();
+      if (response.status === 404 && failedPath.endsWith("/api/admin/app-updates")) {
         throw new Error(
           "This Render API does not have the updated app-release database endpoints yet. Push the latest code so Render deploys, then try again.",
+        );
+      }
+      if (response.status === 404 && failedPath.includes("/api/")) {
+        throw new Error(
+          `The Render API is online but does not have ${failedPath} yet (HTTP 404). Push the latest code to GitHub so Render redeploys, then try again.`,
         );
       }
       if (response.status === 503) {
@@ -321,11 +353,17 @@ export default function AdminPublisher() {
   const [announcementColor, setAnnouncementColor] = useState<"info" | "warning" | "update">("info");
   const [announcementPermanent, setAnnouncementPermanent] = useState(false);
   const [announcementDays, setAnnouncementDays] = useState("7");
+  const [customPushTitle, setCustomPushTitle] = useState("");
+  const [customPushBody, setCustomPushBody] = useState("");
+  const [customPushAccent, setCustomPushAccent] = useState<CustomPushAccent>("info");
+  const [customPushRoute, setCustomPushRoute] = useState<CustomPushRoute>("/");
 
   // Database state
   const [releases, setReleases] = useState<AdminRelease[]>([]);
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>([]);
+  const [customPushes, setCustomPushes] = useState<AdminCustomPush[]>([]);
+  const [busyCustomPushId, setBusyCustomPushId] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [suggestionCounts, setSuggestionCounts] = useState<SuggestionCounts>({
     total: 0,
@@ -391,10 +429,11 @@ export default function AdminPublisher() {
     setDbError(null);
     try {
       const headers = getAdminHeaders(false);
-      const [releasesRes, annRes, sugRes] = await Promise.all([
+      const [releasesRes, annRes, sugRes, pushRes] = await Promise.all([
         fetch(apiUrl("/api/admin/app-updates"), { headers, cache: "no-store" }),
         fetch(apiUrl("/api/admin/announcements"), { headers, cache: "no-store" }).catch(() => null),
         fetch(apiUrl(`/api/admin/suggestions?sort=${suggestionSort}`), { headers, cache: "no-store" }).catch(() => null),
+        fetch(apiUrl("/api/admin/push-notifications"), { headers, cache: "no-store" }).catch(() => null),
       ]);
 
       if (releasesRes.status === 401) {
@@ -451,6 +490,13 @@ export default function AdminPublisher() {
             rejected: loadedSuggestions.filter((s) => s.status === "rejected").length,
             archived: loadedSuggestions.filter((s) => s.status === "archived").length,
           });
+        }
+      }
+
+      if (pushRes && pushRes.ok) {
+        const pushData = await readApiResponse(pushRes);
+        if (Array.isArray(pushData.notifications)) {
+          setCustomPushes(pushData.notifications as AdminCustomPush[]);
         }
       }
     } catch (cause) {
@@ -597,6 +643,48 @@ export default function AdminPublisher() {
     setError(null);
     setResult(null);
     try {
+      if (mode === "push") {
+        const title = customPushTitle.trim();
+        const body = customPushBody.trim();
+        if (!title) {
+          throw new Error("Enter a title for your custom push notification.");
+        }
+        if (!body) {
+          throw new Error("Enter a message body for your custom push notification.");
+        }
+        const response = await fetch(apiUrl("/api/admin/push-notifications"), {
+          method: "POST",
+          headers: getAdminHeaders(true),
+          body: JSON.stringify({
+            title,
+            body,
+            accentType: customPushAccent,
+            targetRoute: customPushRoute,
+          }),
+        });
+        if (response.status === 401) {
+          handleUnauthorized();
+          return;
+        }
+        const data = await readApiResponse(response);
+        if (!response.ok) {
+          throw new Error(
+            typeof data.error === "string"
+              ? data.error
+              : "Could not send custom push notification.",
+          );
+        }
+        const pushStatus = isRecord(data.push) ? (data.push as unknown as PushStatus) : undefined;
+        setResult({
+          message: `Custom push "${title}" sent! HutaoTik devices will show this notification automatically.`,
+          push: pushStatus && pushStatus.status !== "not_configured" ? pushStatus : undefined,
+        });
+        setCustomPushTitle("");
+        setCustomPushBody("");
+        await loadDatabase();
+        return;
+      }
+
       const isUpdate = mode === "update";
       const content = changelog.trim();
       const link = downloadUrl.trim();
@@ -1024,6 +1112,36 @@ export default function AdminPublisher() {
     }
   };
 
+  const deleteCustomPush = async (id: number) => {
+    setBusyCustomPushId(id);
+    setDbError(null);
+    try {
+      const response = await fetch(apiUrl(`/api/admin/push-notifications/${id}`), {
+        method: "DELETE",
+        headers: getAdminHeaders(false),
+      });
+      if (response.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      if (response.ok) await loadDatabase();
+    } catch (cause) {
+      setDbError(cause instanceof Error ? cause.message : "Could not delete push notification.");
+    } finally {
+      setBusyCustomPushId(null);
+    }
+  };
+
+  const prefillCustomPush = (item: AdminCustomPush) => {
+    setMode("push");
+    setCustomPushTitle(item.title);
+    setCustomPushBody(item.body);
+    setCustomPushAccent(item.accentType);
+    setCustomPushRoute(item.targetRoute);
+    setError(null);
+    setResult(null);
+  };
+
   const signOut = () => {
     localStorage.removeItem("hutaotik_release_admin_token");
     setToken("");
@@ -1031,6 +1149,7 @@ export default function AdminPublisher() {
     setReleases([]);
     setStats(null);
     setAnnouncements([]);
+    setCustomPushes([]);
   };
 
   const directApkPreview =
@@ -1269,30 +1388,41 @@ export default function AdminPublisher() {
                           setError(null);
                           setResult(null);
                         }}
-                        className="grid grid-cols-2 gap-2.5"
+                        className="grid grid-cols-3 gap-2"
                         aria-label="Post type"
                       >
                         <Label
                           htmlFor="post-type-update"
-                          className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-xs font-semibold transition-colors ${
+                          className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-xl border p-2.5 text-[11px] sm:text-xs font-semibold transition-colors ${
                             mode === "update"
                               ? "border-primary bg-primary/10 text-foreground"
                               : "border-border bg-background/50 text-muted-foreground"
                           }`}
                         >
                           <RadioGroupItem id="post-type-update" value="update" />
-                          App Update
+                          <span>App Update</span>
                         </Label>
                         <Label
                           htmlFor="post-type-announcement"
-                          className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-xs font-semibold transition-colors ${
+                          className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-xl border p-2.5 text-[11px] sm:text-xs font-semibold transition-colors ${
                             mode === "announcement"
                               ? "border-primary bg-primary/10 text-foreground"
                               : "border-border bg-background/50 text-muted-foreground"
                           }`}
                         >
                           <RadioGroupItem id="post-type-announcement" value="announcement" />
-                          Announcement
+                          <span>Banner</span>
+                        </Label>
+                        <Label
+                          htmlFor="post-type-push"
+                          className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-xl border p-2.5 text-[11px] sm:text-xs font-semibold transition-colors ${
+                            mode === "push"
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "border-border bg-background/50 text-muted-foreground"
+                          }`}
+                        >
+                          <RadioGroupItem id="post-type-push" value="push" />
+                          <span>Custom Push</span>
                         </Label>
                       </RadioGroup>
 
@@ -1347,24 +1477,100 @@ export default function AdminPublisher() {
                         </>
                       )}
 
-                      <div className="space-y-1.5">
-                        <Label htmlFor="release-changelog" className="text-xs">
-                          {mode === "update" ? "What's new (Changelog)" : "Announcement message"}
-                        </Label>
-                        <Textarea
-                          id="release-changelog"
-                          value={changelog}
-                          onChange={(e) => setChangelog(e.target.value)}
-                          maxLength={5000}
-                          rows={4}
-                          placeholder={
-                            mode === "update"
-                              ? "- Added live download progress bar\n- Fixed GCash menu layout\n- Improved Pinterest & Instagram downloads"
-                              : "Write an announcement for the HutaoTik lobby…"
-                          }
-                          required
-                        />
-                      </div>
+                      {mode === "push" ? (
+                        <div className="space-y-3.5">
+                          <div className="space-y-1.5">
+                            <Label htmlFor="custom-push-title" className="text-xs">
+                              Notification Title
+                            </Label>
+                            <Input
+                              id="custom-push-title"
+                              value={customPushTitle}
+                              onChange={(e) => setCustomPushTitle(e.target.value)}
+                              placeholder="e.g. New Feature Drop! / Server Notice"
+                              maxLength={100}
+                              required
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label htmlFor="custom-push-body" className="text-xs">
+                              Notification Message
+                            </Label>
+                            <Textarea
+                              id="custom-push-body"
+                              value={customPushBody}
+                              onChange={(e) => setCustomPushBody(e.target.value)}
+                              maxLength={500}
+                              rows={3}
+                              placeholder="Write the exact custom push notification message users will see on their phone…"
+                              required
+                            />
+                            <p className="text-right font-mono text-[10px] text-muted-foreground">
+                              {customPushBody.length}/500
+                            </p>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-background/60 p-3 sm:grid-cols-2">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Notification Style</Label>
+                              <Select
+                                value={customPushAccent}
+                                onValueChange={(v) => setCustomPushAccent(v as CustomPushAccent)}
+                              >
+                                <SelectTrigger className="h-9 text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="info">Info (Orange)</SelectItem>
+                                  <SelectItem value="update">Update (Blue)</SelectItem>
+                                  <SelectItem value="promo">Highlight (Green)</SelectItem>
+                                  <SelectItem value="warning">Warning (Red)</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Opens When Tapped</Label>
+                              <Select
+                                value={customPushRoute}
+                                onValueChange={(v) => setCustomPushRoute(v as CustomPushRoute)}
+                              >
+                                <SelectTrigger className="h-9 text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="/">Lobby (Home)</SelectItem>
+                                  <SelectItem value="/updates">App Updates</SelectItem>
+                                  <SelectItem value="/suggestions">Suggestions Box</SelectItem>
+                                  <SelectItem value="/history">Download History</SelectItem>
+                                  <SelectItem value="/taotools">TaoTools Suite</SelectItem>
+                                  <SelectItem value="/settings">Settings</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <Label htmlFor="release-changelog" className="text-xs">
+                            {mode === "update" ? "What's new (Changelog)" : "Announcement message"}
+                          </Label>
+                          <Textarea
+                            id="release-changelog"
+                            value={changelog}
+                            onChange={(e) => setChangelog(e.target.value)}
+                            maxLength={5000}
+                            rows={4}
+                            placeholder={
+                              mode === "update"
+                                ? "- Added live download progress bar\n- Fixed GCash menu layout\n- Improved Pinterest & Instagram downloads"
+                                : "Write an announcement for the HutaoTik lobby…"
+                            }
+                            required
+                          />
+                        </div>
+                      )}
 
                       {mode === "update" ? (
                         <div className="space-y-3">
@@ -1590,7 +1796,7 @@ export default function AdminPublisher() {
                             </div>
                           )}
                         </div>
-                      ) : (
+                      ) : mode === "announcement" ? (
                         <div className="space-y-1.5">
                           <Label htmlFor="release-download-url" className="text-xs">
                             Link (optional)
@@ -1608,7 +1814,7 @@ export default function AdminPublisher() {
                             Optional HTTPS link rendered as clickable text in the lobby.
                           </p>
                         </div>
-                      )}
+                      ) : null}
 
                       {mode === "update" ? (
                         <div className="space-y-3 rounded-xl border border-border bg-background/60 p-3">
@@ -1658,7 +1864,7 @@ export default function AdminPublisher() {
                             </div>
                           </div>
                         </div>
-                      ) : (
+                      ) : mode === "announcement" ? (
                         <div className="space-y-3 rounded-xl border border-border bg-background/60 p-3">
                           <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-1.5">
@@ -1704,7 +1910,7 @@ export default function AdminPublisher() {
                             />
                           </div>
                         </div>
-                      )}
+                      ) : null}
 
                       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
@@ -1720,7 +1926,9 @@ export default function AdminPublisher() {
                               ? uploadProgress >= 99
                                 ? "Finalizing APK…"
                                 : `Uploading APK (${uploadProgress}%)…`
-                              : "Publishing…"}
+                              : mode === "push"
+                                ? "Sending Push Notification…"
+                                : "Publishing…"}
                           </>
                         ) : mode === "update" ? (
                           <>
@@ -1728,6 +1936,11 @@ export default function AdminPublisher() {
                             {selectedApkSummary
                               ? `Upload APK & Publish v${versionName || "?"}`
                               : `Publish v${versionName || "?"} to All Users`}
+                          </>
+                        ) : mode === "push" ? (
+                          <>
+                            <BellRing className="h-4 w-4" />
+                            Send Custom Push Notification
                           </>
                         ) : (
                           <>
@@ -1739,6 +1952,137 @@ export default function AdminPublisher() {
                     </form>
                   </CardContent>
                 </Card>
+
+                {/* Live Android Push Preview + Sent Custom Push Log */}
+                {mode === "push" && (
+                  <>
+                    <Card className="rounded-2xl border-border bg-card/70">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+                          <span className="flex items-center gap-2">
+                            <Bell className="h-4 w-4 text-primary" />
+                            Android Notification Preview
+                          </span>
+                          <Badge variant="outline" className="text-[10px]">
+                            Opens: {CUSTOM_PUSH_ROUTE_LABELS[customPushRoute]}
+                          </Badge>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="rounded-2xl border border-border/80 bg-background p-3.5 shadow-md">
+                          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <span
+                              className={`flex h-5 w-5 items-center justify-center rounded-full ${
+                                customPushAccent === "warning"
+                                  ? "bg-rose-500/20 text-rose-400"
+                                  : customPushAccent === "update"
+                                    ? "bg-blue-500/20 text-blue-400"
+                                    : customPushAccent === "promo"
+                                      ? "bg-emerald-500/20 text-emerald-400"
+                                      : "bg-primary/20 text-primary"
+                              }`}
+                            >
+                              <BellRing className="h-3 w-3" />
+                            </span>
+                            <span className="font-semibold text-foreground/80">HutaoTik</span>
+                            <span>·</span>
+                            <span>now</span>
+                          </div>
+                          <p className="mt-1.5 text-sm font-bold text-foreground">
+                            {customPushTitle.trim() || "Your custom push title"}
+                          </p>
+                          <p className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                            {customPushBody.trim() ||
+                              "Your custom push notification message will appear here in the Android notification shade."}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="rounded-2xl border-border bg-card">
+                      <CardHeader className="pb-2.5">
+                        <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                          <span className="flex items-center gap-2">
+                            <BellRing className="h-4 w-4 text-primary" />
+                            Sent Custom Push History ({customPushes.length})
+                          </span>
+                        </CardTitle>
+                        <CardDescription className="text-xs">
+                          Recent custom notifications sent to HutaoTik users. Tap Reuse to load one into the editor.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {customPushes.length === 0 ? (
+                          <p className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+                            No custom push notifications sent yet.
+                          </p>
+                        ) : (
+                          <div className="space-y-2.5">
+                            {customPushes.map((item) => (
+                              <div
+                                key={item.id}
+                                className="rounded-xl border border-border bg-background/60 p-3 space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <p className="text-xs font-bold text-foreground">{item.title}</p>
+                                      <Badge
+                                        variant="outline"
+                                        className={`text-[10px] capitalize ${
+                                          item.accentType === "warning"
+                                            ? "border-rose-500/40 bg-rose-500/10 text-rose-400"
+                                            : item.accentType === "update"
+                                              ? "border-blue-500/40 bg-blue-500/10 text-blue-400"
+                                              : item.accentType === "promo"
+                                                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                                                : "border-primary/40 bg-primary/10 text-primary"
+                                        }`}
+                                      >
+                                        {item.accentType}
+                                      </Badge>
+                                      <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                                        {CUSTOM_PUSH_ROUTE_LABELS[item.targetRoute] ?? item.targetRoute}
+                                      </Badge>
+                                    </div>
+                                    <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                                      {item.body}
+                                    </p>
+                                    <p className="mt-1 text-[10px] text-muted-foreground">
+                                      Sent {formatDate(item.createdAt)}
+                                    </p>
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => prefillCustomPush(item)}
+                                      className="h-7 rounded-lg px-2 text-[11px]"
+                                    >
+                                      Reuse
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      disabled={busyCustomPushId === item.id}
+                                      onClick={() => void deleteCustomPush(item.id)}
+                                      title="Delete push record"
+                                      className="h-7 w-7 text-destructive hover:bg-destructive/15"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </>
+                )}
 
                 {/* Live User Prompt Preview */}
                 {mode === "update" && (

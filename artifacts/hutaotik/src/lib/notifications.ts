@@ -32,6 +32,13 @@ interface NativeNotificationBridge {
     changelog: string,
   ): void;
   notifyAnnouncement?(announcementId: number, colorType: string, content: string): void;
+  notifyCustomPush?(
+    pushId: number,
+    title: string,
+    body: string,
+    accentType: string,
+    targetRoute: string,
+  ): void;
   getPendingNotificationRoute?(): string;
   startLiveDownloadNotification?(taskId: string, title: string, folderName: string): void;
   updateLiveDownloadNotification?(
@@ -58,6 +65,7 @@ declare global {
 
 const PREFS_STORAGE_KEY = "hutaotik_notif_prefs_v1";
 const PROMPTED_STORAGE_KEY = "hutaotik_notif_prompted_v1";
+const LAST_CUSTOM_PUSH_STORAGE_KEY = "hutaotik_last_custom_push_id_v1";
 
 const DEFAULT_PREFS: NotificationPreferences = {
   downloads: true,
@@ -280,6 +288,90 @@ export function consumePendingNotificationRoute(): string | null {
   try {
     const raw = getBridge()?.getPendingNotificationRoute?.()?.trim() ?? "";
     return raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface CustomPushPayload {
+  id: number;
+  title: string;
+  body: string;
+  accentType: string;
+  targetRoute: string;
+  createdAt: string;
+}
+
+export async function checkCustomPushNotifications(): Promise<CustomPushPayload | null> {
+  const prefs = loadNotificationPreferences();
+  if (!prefs.announcements) return null;
+
+  // Never mark a push as seen before the device has actually granted notification permission.
+  const status = getNotificationStatus();
+  if (status.supported && !status.granted) return null;
+
+  try {
+    const response = await fetch(apiUrl("/api/push-notifications/latest"), { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { notification?: CustomPushPayload | null };
+    const notif = data?.notification;
+    if (!notif || typeof notif.id !== "number" || notif.id < 1 || !notif.body) return null;
+
+    let lastSeenId = -1;
+    try {
+      const stored = localStorage.getItem(LAST_CUSTOM_PUSH_STORAGE_KEY);
+      if (stored !== null) {
+        const parsed = Number.parseInt(stored, 10);
+        if (Number.isSafeInteger(parsed)) lastSeenId = parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    if (notif.id <= lastSeenId) return null;
+
+    if (lastSeenId === -1 && notif.createdAt) {
+      const ageMs = Date.now() - new Date(notif.createdAt).getTime();
+      if (Number.isFinite(ageMs) && ageMs > 6 * 60 * 60 * 1000) {
+        try {
+          localStorage.setItem(LAST_CUSTOM_PUSH_STORAGE_KEY, String(notif.id));
+        } catch {
+          /* ignore */
+        }
+        return null;
+      }
+    }
+
+    try {
+      localStorage.setItem(LAST_CUSTOM_PUSH_STORAGE_KEY, String(notif.id));
+    } catch {
+      /* ignore */
+    }
+
+    const bridge = getBridge();
+    if (bridge?.notifyCustomPush) {
+      try {
+        bridge.notifyCustomPush(
+          notif.id,
+          notif.title || "HutaoTik Alert",
+          notif.body,
+          notif.accentType || "info",
+          notif.targetRoute || "/",
+        );
+      } catch {
+        /* ignore bridge errors */
+      }
+      return notif;
+    }
+
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification(notif.title || "HutaoTik Alert", { body: notif.body });
+      } catch {
+        /* ignore */
+      }
+    }
+    return notif;
   } catch {
     return null;
   }

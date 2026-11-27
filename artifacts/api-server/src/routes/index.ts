@@ -17,6 +17,7 @@ import appUpdatesRouter from "./app-updates";
 import pinterestRouter from "./pinterest";
 import instagramRouter from "./instagram";
 import suggestionsRouter from "./suggestions";
+import customPushRouter from "./custom-push";
 
 const router: IRouter = Router();
 
@@ -38,5 +39,6 @@ router.use(appUpdatesRouter);
 router.use(pinterestRouter);
 router.use(instagramRouter);
 router.use(suggestionsRouter);
+router.use(customPushRouter);
 
 export default router;

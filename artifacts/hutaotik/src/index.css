@@ -166,8 +166,8 @@
   --tracking-normal: -0.006em;
   --spacing: 0.25rem;
 
-  --spring-bounce: cubic-bezier(0.22, 1.24, 0.36, 1);
-  --spring-snappy: cubic-bezier(0.22, 1.14, 0.36, 1);
+  --spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-snappy: cubic-bezier(0.34, 1.42, 0.64, 1);
   --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 
   --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
@@ -576,11 +576,11 @@ html.theme-transition::after {
 }
 
 .dropdown-motion[data-state="open"] {
-  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) backwards;
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 420ms) var(--ease-smooth) backwards;
 }
 
 .dropdown-motion[data-state="closed"] {
-  animation: dropdown-bounce-out var(--dropdown-close-duration, 150ms) cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dropdown-bounce-out var(--dropdown-close-duration, 160ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] {
@@ -592,11 +592,11 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) backwards;
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 440ms) var(--ease-smooth) backwards;
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
-  animation: dropdown-bounce-out var(--dropdown-close-duration, 150ms) cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dropdown-bounce-out var(--dropdown-close-duration, 160ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] {
@@ -631,8 +631,8 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
-  animation: dropdown-item-bounce var(--dropdown-item-duration, 280ms) var(--spring-bounce) backwards;
-  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 22ms));
+  animation: dropdown-item-bounce var(--dropdown-item-duration, 380ms) var(--ease-smooth) backwards;
+  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 26ms));
 }
 
 :root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1) { --dropdown-item-index: 0; }
@@ -663,13 +663,15 @@ html.theme-transition::after {
 }
 
 @keyframes dropdown-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -10px, 0) scale(0.92); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, -18px, 0) scale(0.82); }
+  52%  { opacity: 1; transform: translate3d(0, 5px, 0) scale(1.06); }
+  76%  { transform: translate3d(0, -2px, 0) scale(0.975); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes dropdown-bounce-out {
   from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-  to   { opacity: 0; transform: translate3d(0, -6px, 0) scale(0.95); }
+  to   { opacity: 0; transform: translate3d(0, -8px, 0) scale(0.90); }
 }
 
 @keyframes dropdown-slide-in {
@@ -704,14 +706,10 @@ html.theme-transition::after {
 }
 
 @keyframes dropdown-item-bounce {
-  from {
-    opacity: 0;
-    transform: translate3d(0, -9px, 0) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
+  0%   { opacity: 0; transform: translate3d(0, -14px, 0) scale(0.86); }
+  56%  { opacity: 1; transform: translate3d(0, 3px, 0) scale(1.045); }
+  80%  { transform: translate3d(0, -1px, 0) scale(0.985); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 .theme-preset-swatch {
@@ -738,13 +736,15 @@ html.theme-transition::after {
 }
 
 .settings-disclosure[open] > :not(summary) {
-  animation: disclosure-bounce-in 300ms var(--spring-bounce) backwards;
+  animation: disclosure-bounce-in 440ms var(--ease-smooth) backwards;
   transform-origin: top center;
 }
 
 @keyframes disclosure-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -10px, 0) scale(0.985); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, -16px, 0) scale(0.92); }
+  54%  { opacity: 1; transform: translate3d(0, 4px, 0) scale(1.028); }
+  78%  { transform: translate3d(0, -1.5px, 0) scale(0.992); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 .screen-transition {
@@ -771,14 +771,14 @@ html.theme-transition::after {
 
 .screen-transition--bounce {
   animation-name: screen-bounce-in;
-  animation-duration: 420ms;
-  animation-timing-function: var(--spring-bounce);
+  animation-duration: 540ms;
+  animation-timing-function: var(--ease-smooth);
 }
 
 .screen-transition--elastic {
   animation-name: screen-elastic-in;
-  animation-duration: 500ms;
-  animation-timing-function: cubic-bezier(0.22, 1.24, 0.36, 1);
+  animation-duration: 600ms;
+  animation-timing-function: var(--ease-smooth);
 }
 
 .screen-transition--flip {
@@ -810,14 +810,17 @@ html.theme-transition::after {
 }
 
 @keyframes screen-bounce-in {
-  from { opacity: 0; transform: translate3d(0, 26px, 0) scale(0.95); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 40px, 0) scale(0.90); }
+  50%  { opacity: 1; transform: translate3d(0, -10px, 0) scale(1.036); }
+  75%  { transform: translate3d(0, 4px, 0) scale(0.988); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-elastic-in {
-  0%   { opacity: 0; transform: translate3d(34px, 0, 0) scale(0.92); }
-  62%  { opacity: 1; transform: translate3d(-5px, 0, 0) scale(1.015); }
-  84%  { opacity: 1; transform: translate3d(2px, 0, 0) scale(0.996); }
+  0%   { opacity: 0; transform: translate3d(44px, 0, 0) scale(0.86); }
+  46%  { opacity: 1; transform: translate3d(-11px, 0, 0) scale(1.055); }
+  70%  { transform: translate3d(6px, 0, 0) scale(0.975); }
+  86%  { transform: translate3d(-2px, 0, 0) scale(1.012); }
   100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
@@ -988,22 +991,34 @@ button svg,
 button:not(:disabled):active,
 [role="button"]:not([aria-disabled="true"]):active,
 .interactive-element:active {
-  transition-duration: 85ms;
+  transition-duration: 75ms;
   transition-timing-function: var(--ease-smooth);
-  transform: translate3d(0, 1px, 0) scale(0.95);
+  transform: translate3d(0, 2px, 0) scale(0.91, 0.89);
 }
 
 button:not(:disabled):active > svg,
 .nav-pill-btn:not(:disabled):active > svg {
-  transition-duration: 85ms;
-  transform: scale(0.88) rotate(-4deg);
+  transition-duration: 75ms;
+  transform: scale(0.84) rotate(-6deg);
 }
 
 .nav-pill-btn:not(:disabled):active {
-  transform: translate3d(0, 1px, 0) scale(0.93);
+  transform: translate3d(0, 2px, 0) scale(0.89, 0.87);
   box-shadow:
     inset 0 1px 0 0 rgba(255, 255, 255, 0.32),
     0 2px 8px rgba(0, 0, 0, 0.65);
+}
+
+.btn-tap-bouncing {
+  animation: btn-tap-bounce 420ms var(--ease-smooth) !important;
+}
+
+@keyframes btn-tap-bounce {
+  0%   { transform: translate3d(0, 2px, 0) scale(0.91, 0.89); }
+  36%  { transform: translate3d(0, -3px, 0) scale(1.08, 1.06); }
+  62%  { transform: translate3d(0, 1.5px, 0) scale(0.96, 0.97); }
+  82%  { transform: translate3d(0, -0.5px, 0) scale(1.025, 1.018); }
+  100% { transform: translate3d(0, 0, 0) scale(1, 1); }
 }
 
 .app-shell main button.bg-primary:not(:disabled):active {
@@ -1033,15 +1048,15 @@ summary:active {
 }
 
 .dialog-bounce-content[data-state="open"] {
-  animation: dialog-bounce-in 300ms var(--spring-bounce) backwards;
+  animation: dialog-bounce-in 460ms var(--ease-smooth) backwards;
 }
 
 .dialog-bounce-content[data-state="closed"] {
-  animation: dialog-bounce-out 150ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dialog-bounce-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 .toast-bounce[data-state="open"] {
-  animation: toast-bounce-in 340ms var(--spring-bounce) backwards;
+  animation: toast-bounce-in 480ms var(--ease-smooth) backwards;
 }
 
 .toast-bounce[data-state="closed"] {
@@ -1049,18 +1064,22 @@ summary:active {
 }
 
 @keyframes dialog-bounce-in {
-  from { opacity: 0; transform: scale(0.92); }
-  to   { opacity: 1; transform: scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 22px, 0) scale(0.80); }
+  52%  { opacity: 1; transform: translate3d(0, -6px, 0) scale(1.06); }
+  76%  { transform: translate3d(0, 2px, 0) scale(0.975); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes dialog-bounce-out {
   from { opacity: 1; transform: scale(1); }
-  to   { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 0; transform: scale(0.90); }
 }
 
 @keyframes toast-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -14px, 0) scale(0.95); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, -26px, 0) scale(0.84); }
+  52%  { opacity: 1; transform: translate3d(0, 6px, 0) scale(1.055); }
+  76%  { transform: translate3d(0, -2px, 0) scale(0.98); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes toast-bounce-out {
@@ -1092,27 +1111,27 @@ summary:active {
 
 /* ── Reusable Smooth Spring Utilities ───────────────────────── */
 .animate-bounce-pop {
-  animation: bounce-pop-in 360ms var(--spring-bounce) backwards;
+  animation: bounce-pop-in 480ms var(--ease-smooth) backwards;
 }
 
 .animate-card-bounce-in {
-  animation: card-bounce-in 380ms var(--spring-bounce) backwards;
+  animation: card-bounce-in 520ms var(--ease-smooth) backwards;
 }
 
 .animate-success-pop {
-  animation: success-rubber-pop 380ms var(--spring-bounce) backwards;
+  animation: success-rubber-pop 520ms var(--ease-smooth) backwards;
 }
 
 .animate-error-shake {
-  animation: error-bounce-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) backwards;
+  animation: error-bounce-shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97) backwards;
 }
 
 .animate-splash-logo {
-  animation: splash-logo-bounce 520ms var(--spring-bounce) backwards;
+  animation: splash-logo-bounce 640ms var(--ease-smooth) backwards;
 }
 
 .animate-pill-pop {
-  animation: pill-pop 260ms var(--spring-bounce) backwards;
+  animation: pill-pop 380ms var(--ease-smooth) backwards;
 }
 
 .animate-float-gentle {
@@ -1122,45 +1141,60 @@ summary:active {
 /* ── General UI animations ──────────────────────────────────── */
 @keyframes float-up-down {
   0%, 100% { transform: translate3d(0, 0, 0); }
-  50%      { transform: translate3d(0, -4px, 0); }
+  50%      { transform: translate3d(0, -5px, 0); }
 }
 
 @keyframes pop-in {
-  from { transform: scale(0.92); opacity: 0; }
-  to   { transform: scale(1); opacity: 1; }
+  0%   { transform: scale(0.84); opacity: 0; }
+  55%  { transform: scale(1.06); opacity: 1; }
+  80%  { transform: scale(0.98); }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 @keyframes bounce-pop-in {
-  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.98); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 22px, 0) scale(0.84); }
+  52%  { opacity: 1; transform: translate3d(0, -6px, 0) scale(1.06); }
+  76%  { transform: translate3d(0, 2px, 0) scale(0.978); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes card-bounce-in {
-  from { opacity: 0; transform: translate3d(0, 12px, 0) scale(0.985); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 28px, 0) scale(0.88); }
+  54%  { opacity: 1; transform: translate3d(0, -7px, 0) scale(1.045); }
+  78%  { transform: translate3d(0, 3px, 0) scale(0.985); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes success-rubber-pop {
-  from { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.96); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.78); }
+  42%  { opacity: 1; transform: translate3d(0, -4px, 0) scale(1.09, 0.93); }
+  66%  { transform: translate3d(0, 2px, 0) scale(0.96, 1.04); }
+  84%  { transform: translate3d(0, 0, 0) scale(1.02, 0.99); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes error-bounce-shake {
   0%   { opacity: 0; transform: translate3d(0, 0, 0); }
-  25%  { opacity: 1; transform: translate3d(-4px, 0, 0); }
-  50%  { transform: translate3d(4px, 0, 0); }
-  75%  { transform: translate3d(-2px, 0, 0); }
+  20%  { opacity: 1; transform: translate3d(-7px, 0, 0); }
+  45%  { transform: translate3d(6px, 0, 0); }
+  70%  { transform: translate3d(-4px, 0, 0); }
+  88%  { transform: translate3d(2px, 0, 0); }
   100% { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes splash-logo-bounce {
-  from { opacity: 0; transform: translate3d(0, -18px, 0) scale(0.9); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, -34px, 0) scale(0.72); }
+  48%  { opacity: 1; transform: translate3d(0, 8px, 0) scale(1.10, 0.92); }
+  72%  { transform: translate3d(0, -4px, 0) scale(0.96, 1.04); }
+  88%  { transform: translate3d(0, 1.5px, 0) scale(1.02, 0.99); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes pill-pop {
-  from { transform: scale(0.95); }
-  to   { transform: scale(1); }
+  0%   { transform: scale(0.82); }
+  52%  { transform: scale(1.10); }
+  78%  { transform: scale(0.96); }
+  100% { transform: scale(1); }
 }
 
 @keyframes glow-pulse {
@@ -1186,6 +1220,7 @@ summary:active {
 :root[data-bounce-animation="off"] .animate-pill-pop,
 :root[data-bounce-animation="off"] .animate-bounce,
 :root[data-bounce-animation="off"] .animate-float-gentle,
+:root[data-bounce-animation="off"] .btn-tap-bouncing,
 :root[data-bounce-animation="off"] .settings-disclosure[open] > :not(summary) {
   animation: none !important;
   will-change: auto;
@@ -1268,6 +1303,7 @@ summary:active {
   .animate-splash-logo,
   .animate-pill-pop,
   .animate-float-gentle,
+  .btn-tap-bouncing,
   .settings-disclosure[open] > :not(summary) {
     animation: none !important;
     will-change: auto;

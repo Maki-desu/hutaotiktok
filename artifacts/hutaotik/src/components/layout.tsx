@@ -1,9 +1,22 @@
-import { ReactNode, useState, useCallback, useEffect, type MouseEvent } from "react";
+import { ReactNode, useState, useCallback, useEffect, useRef, type MouseEvent } from "react";
 import {
   useGetPublicSettings,
   getGetPublicSettingsQueryKey,
 } from "@workspace/api-client-react";
-import { Coffee, Copy, ExternalLink, History as HistoryIcon, Lightbulb, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Coffee,
+  Copy,
+  ExternalLink,
+  History as HistoryIcon,
+  Home as HomeIcon,
+  Lightbulb,
+  Menu,
+  Settings as SettingsIcon,
+  Sparkles,
+  Wand2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +26,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/api-url";
 import { loadBrandingImages, onBrandingChanged } from "@/lib/app-branding";
@@ -120,6 +141,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const [location, setLocation] = useState(
     () => (window.location.hash.replace("#", "") || "/").split("?")[0],
   );
+  const [showLobbyHint, setShowLobbyHint] = useState(false);
+  const initialHintDoneRef = useRef(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -130,6 +153,31 @@ export function Layout({ children }: { children: ReactNode }) {
     syncHash();
     return () => window.removeEventListener("hashchange", syncHash);
   }, []);
+
+  // Top-left Lobby hint: shows for 3 seconds, disappears for 10 seconds, then reappears in a clean cycle
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const showCycle = () => {
+      if (cancelled) return;
+      setShowLobbyHint(true);
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        setShowLobbyHint(false);
+        timer = setTimeout(showCycle, 10_000);
+      }, 3_000);
+    };
+
+    const initialDelay = !initialHintDoneRef.current ? 2_550 : 120;
+    initialHintDoneRef.current = true;
+    timer = setTimeout(showCycle, initialDelay);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [location]);
 
   const { data: publicSettings } = useGetPublicSettings({
     query: { queryKey: getGetPublicSettingsQueryKey(), refetchInterval: 30_000 },
@@ -222,6 +270,58 @@ export function Layout({ children }: { children: ReactNode }) {
     }
   };
 
+  const navItems = [
+    {
+      path: "/",
+      label: "Home",
+      description: "Download videos, audio & photos",
+      icon: HomeIcon,
+      testId: "nav-home",
+    },
+    {
+      path: "/history",
+      label: "History",
+      description: "Past downloads & re-download",
+      icon: HistoryIcon,
+      testId: "nav-history",
+    },
+    {
+      path: "/taotools",
+      label: "Taotools",
+      description: "Compress, enhance & remove BG",
+      icon: Wand2,
+      testId: "nav-taotools",
+    },
+    {
+      path: "/updates",
+      label: "Updates",
+      description: "New releases & changelog",
+      icon: Sparkles,
+      testId: "nav-updates",
+    },
+    {
+      path: "/suggestions",
+      label: "Suggestions",
+      description: "Send & upvote ideas",
+      icon: Lightbulb,
+      testId: "nav-suggestions",
+    },
+  ] as const;
+
+  const settingsNavItem = {
+    path: "/settings",
+    label: "Settings",
+    description: "Display size, fonts, theme & cache",
+    icon: SettingsIcon,
+    testId: "nav-settings",
+  } as const;
+
+  const activeSubItem =
+    location === "/settings"
+      ? settingsNavItem
+      : navItems.find((item) => item.path !== "/" && item.path === location);
+  const ActiveTriggerIcon = activeSubItem ? activeSubItem.icon : Menu;
+
   return (
     <div className="app-shell relative min-h-[100dvh] flex flex-col bg-background text-foreground">
       <div aria-hidden="true" className="liquid-glass-backdrop pointer-events-none" />
@@ -235,115 +335,144 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         {/* Header row */}
-        <header className="relative z-10 flex flex-wrap items-center justify-between px-4 pt-4 pb-2 gap-2.5">
-          <button
-            type="button"
-            onClick={() => navigateTo("/")}
-            className="flex items-center gap-3 group bg-transparent border-none cursor-pointer text-left shrink-0"
-          >
-            <GhostOrbit logoSrc={logoSrc} />
-            <span className="hero-text-shadow text-white font-bold text-lg font-syne tracking-tight leading-none transition-colors duration-200 group-hover:text-primary">
-              {publicSettings?.siteTitle || "HutaoTik"}
-            </span>
-          </button>
-
-          <nav className="nav-pill-group flex items-center gap-1.5 flex-wrap justify-end max-w-full">
-            {/* History */}
+        <header className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2 gap-2.5">
+          <div className="relative shrink-0">
             <button
               type="button"
-              onClick={() => navigateTo("/history")}
-              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
-                location === "/history"
-                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
-                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
-              }`}
-              data-testid="nav-history"
-              title="Download History"
-              aria-current={location === "/history" ? "page" : undefined}
+              onClick={() => navigateTo("/")}
+              className="flex items-center gap-3 group bg-transparent border-none cursor-pointer text-left shrink-0"
             >
-              <HistoryIcon className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
-              <span className="nav-pill-label">History</span>
+              <GhostOrbit logoSrc={logoSrc} />
+              <span className="hero-text-shadow text-white font-bold text-lg font-syne tracking-tight leading-none transition-colors duration-200 group-hover:text-primary">
+                {publicSettings?.siteTitle || "HutaoTik"}
+              </span>
             </button>
 
-            {/* Taotools */}
             <button
               type="button"
-              onClick={() => navigateTo("/taotools")}
-              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
-                location === "/taotools"
-                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
-                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
+              data-testid="lobby-hint-pill"
+              onClick={() => navigateTo("/")}
+              aria-hidden={!showLobbyHint}
+              tabIndex={showLobbyHint ? 0 : -1}
+              className={`absolute left-0 top-full mt-2 z-20 inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-white/25 bg-black/75 px-2.5 py-1 text-[0.65rem] font-semibold text-white/95 shadow-[0_6px_16px_rgba(0,0,0,0.62)] backdrop-blur-md transition-all duration-300 ease-[var(--spring-bounce)] cursor-pointer ${
+                showLobbyHint
+                  ? "opacity-100 translate-y-0 scale-100"
+                  : "opacity-0 -translate-y-1.5 scale-90 pointer-events-none"
               }`}
-              data-testid="nav-taotools"
-              title="Tao Tools Suite"
-              aria-current={location === "/taotools" ? "page" : undefined}
             >
-              <Wand2 className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
-              <span className="nav-pill-label">Taotools</span>
+              <span
+                aria-hidden="true"
+                className="absolute -top-1 left-3.5 h-2 w-2 rotate-45 border-l border-t border-white/25 bg-black/80"
+              />
+              <HomeIcon className="h-3 w-3 shrink-0 text-primary" />
+              <span>Tap logo for Lobby</span>
             </button>
+          </div>
 
-            {/* Updates */}
-            <button
-              type="button"
-              onClick={() => navigateTo("/updates")}
-              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
-                location === "/updates"
-                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
-                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
-              }`}
-              data-testid="nav-updates"
-              title="App Version Updates & Changelog"
-              aria-current={location === "/updates" ? "page" : undefined}
-            >
-              <Sparkles className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
-              <span className="nav-pill-label">Updates</span>
-            </button>
+          <nav className="nav-pill-group flex items-center justify-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="nav-menu-trigger"
+                  aria-label="Open navigation menu"
+                  className={`nav-pill-btn group relative flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer border backdrop-blur-md outline-none focus-visible:ring-2 focus-visible:ring-primary/70 ${
+                    activeSubItem
+                      ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
+                      : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
+                  }`}
+                >
+                  <ActiveTriggerIcon className="w-4 h-4 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+                  <span className="nav-pill-label">
+                    {activeSubItem ? activeSubItem.label : "Menu"}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-white/85 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-180" />
+                </button>
+              </DropdownMenuTrigger>
 
-            {/* Suggestions */}
-            <button
-              type="button"
-              onClick={() => navigateTo("/suggestions")}
-              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
-                location === "/suggestions"
-                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
-                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
-              }`}
-              data-testid="nav-suggestions"
-              title="Send & View Suggestions"
-              aria-current={location === "/suggestions" ? "page" : undefined}
-            >
-              <Lightbulb className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
-              <span className="nav-pill-label">Suggestions</span>
-            </button>
+              <DropdownMenuContent
+                align="end"
+                sideOffset={8}
+                className="w-60 rounded-2xl border border-border/80 bg-popover/95 p-1.5 shadow-[0_18px_42px_-8px_rgba(0,0,0,0.72)] backdrop-blur-xl"
+              >
+                <DropdownMenuLabel className="px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Navigation
+                </DropdownMenuLabel>
 
-            {/* Settings */}
-            <button
-              type="button"
-              onClick={() => navigateTo("/settings")}
-              className={`nav-pill-btn relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[0.6875rem] sm:text-xs font-semibold cursor-pointer border backdrop-blur-md ${
-                location === "/settings"
-                  ? "nav-pill-active text-white border-primary/80 bg-primary/35 shadow-[0_4px_16px_rgba(0,0,0,0.58),0_0_14px_hsl(var(--primary)/0.45)]"
-                  : "text-white border-white/25 bg-black/55 hover:bg-black/70 shadow-[0_4px_14px_rgba(0,0,0,0.55),0_1px_3px_rgba(0,0,0,0.65)]"
-              }`}
-              data-testid="nav-settings"
-              title="App Settings"
-              aria-current={location === "/settings" ? "page" : undefined}
-            >
-              <SettingsIcon className="w-3.5 h-3.5 text-primary shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
-              <span className="nav-pill-label">Settings</span>
-            </button>
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = location === item.path;
+                  return (
+                    <DropdownMenuItem
+                      key={item.path}
+                      data-testid={item.testId}
+                      onSelect={() => navigateTo(item.path)}
+                      className={`cursor-pointer rounded-xl px-2.5 py-2 gap-2.5 transition-colors ${
+                        isActive
+                          ? "bg-primary/15 text-foreground focus:bg-primary/20"
+                          : "focus:bg-accent/80"
+                      }`}
+                    >
+                      <span
+                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${
+                          isActive
+                            ? "border-primary/45 bg-primary/20 text-primary"
+                            : "border-border/70 bg-background/70 text-primary"
+                        }`}
+                      >
+                        <Icon className="h-4 w-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-bold leading-tight text-foreground">
+                          {item.label}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10px] leading-tight text-muted-foreground">
+                          {item.description}
+                        </span>
+                      </span>
+                      {isActive && (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      )}
+                    </DropdownMenuItem>
+                  );
+                })}
+
+                <DropdownMenuSeparator className="my-1.5 bg-border/70" />
+
+                <DropdownMenuItem
+                  data-testid={settingsNavItem.testId}
+                  onSelect={() => navigateTo(settingsNavItem.path)}
+                  className={`cursor-pointer rounded-xl px-2.5 py-2 gap-2.5 transition-colors ${
+                    location === settingsNavItem.path
+                      ? "bg-primary/15 text-foreground focus:bg-primary/20"
+                      : "focus:bg-accent/80"
+                  }`}
+                >
+                  <span
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${
+                      location === settingsNavItem.path
+                        ? "border-primary/45 bg-primary/20 text-primary"
+                        : "border-border/70 bg-background/70 text-primary"
+                    }`}
+                  >
+                    <SettingsIcon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-bold leading-tight text-foreground">
+                      {settingsNavItem.label}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] leading-tight text-muted-foreground">
+                      {settingsNavItem.description}
+                    </span>
+                  </span>
+                  {location === settingsNavItem.path && (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  )}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </nav>
         </header>
-
-        {/* Hero text */}
-        <div className="relative z-10 px-4 pt-4 pb-8 animate-bounce-pop" style={{ animationDelay: "80ms" }}>
-          <h1 className="hero-text-shadow text-3xl font-syne font-extrabold text-white leading-tight">
-            Download <span className="text-primary">anything.</span>
-          </h1>
-          <p className="hero-text-shadow mt-1.5 text-sm text-white/80 font-medium tracking-wide">
-            TikTok
-          </p>
-        </div>
       </div>
 
       {/* Admin TikTok profile card */}

@@ -4,7 +4,7 @@ import { SiDiscord } from "react-icons/si";
 import logoFallback from "@assets/b52ef5e5af44af36517e4b1568bff58a_1780063742037.jpg";
 import { loadBrandingImages, onBrandingChanged } from "@/lib/app-branding";
 
-const APP_VERSION = import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.24";
+const APP_VERSION = import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.29";
 const DISCORD_INVITE_URL = "https://discord.gg/wu6ndP3Qgf";
 
 export function SplashIntro({ onFinish }: { onFinish?: () => void }) {

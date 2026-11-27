@@ -11,11 +11,13 @@ import {
 } from "lucide-react";
 import { SiDiscord } from "react-icons/si";
 import {
+  clearUpdateNotifications,
   fetchLatestRelease,
   fetchReleaseHistory,
   getInstalledAppVersion,
+  getNativeInstalledAppInfo,
   isDirectApkInstallUrl,
-  isUpdateNewer,
+  isReleaseInstalledOnDevice,
   openReleaseDownloadInBrowser,
   registerAppUpdateProgressListener,
   startAppUpdateInstall,
@@ -60,6 +62,9 @@ export default function Updates() {
       ]);
       setLatest(latestRelease);
       setHistory(releaseHistory);
+      if (!latestRelease || isReleaseInstalledOnDevice(latestRelease)) {
+        clearUpdateNotifications();
+      }
     } catch (cause) {
       setCheckError(
         cause instanceof Error ? cause.message : "Could not reach the update server right now.",
@@ -92,7 +97,7 @@ export default function Updates() {
     });
   }, []);
 
-  const hasUpdate = latest !== null && isUpdateNewer(latest.versionCode, installed.versionCode);
+  const hasUpdate = latest !== null && !isReleaseInstalledOnDevice(latest);
   const isDirectApk = latest ? isDirectApkInstallUrl(latest.downloadUrl) : false;
 
   const handleInstallRelease = (target: AvailableRelease) => {
@@ -298,7 +303,9 @@ export default function Updates() {
                       <Badge variant="outline" className="font-mono text-[10px]">
                         Build {item.versionCode}
                       </Badge>
-                      {item.versionCode === installed.versionCode && (
+                      {(item.versionCode === installed.versionCode ||
+                        (item.sha256 !== null &&
+                          item.sha256.toLowerCase() === getNativeInstalledAppInfo()?.apkSha256)) && (
                         <Badge className="bg-primary/15 text-primary border-primary/30 text-[10px]">
                           Installed
                         </Badge>

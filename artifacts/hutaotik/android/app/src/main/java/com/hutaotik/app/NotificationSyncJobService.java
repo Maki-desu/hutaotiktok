@@ -100,6 +100,7 @@ public class NotificationSyncJobService extends JobService {
         }
         if (HutaoNotificationHelper.isAnnouncementsEnabled(appContext)) {
             checkAnnouncements(appContext, baseUrl, allowAnnouncementPopup);
+            checkCustomPushNotifications(appContext, baseUrl);
         }
     }
 
@@ -117,6 +118,18 @@ public class NotificationSyncJobService extends JobService {
 
             SharedPreferences prefs = HutaoNotificationHelper.prefs(appContext);
             int lastNotifiedCode = prefs.getInt(HutaoNotificationHelper.KEY_LAST_UPDATE_CODE, 0);
+
+            // Already on this exact release? (same APK bytes even if the Build number was typed differently)
+            String releaseSha = release.optString("sha256", "").trim().toLowerCase(java.util.Locale.US);
+            boolean sameApk = releaseSha.length() == 64
+                && releaseSha.equals(InstalledApkInfo.getApkSha256(appContext));
+            if (latestCode <= installedVersionCode || sameApk) {
+                if (sameApk && latestCode > lastNotifiedCode) {
+                    prefs.edit().putInt(HutaoNotificationHelper.KEY_LAST_UPDATE_CODE, latestCode).apply();
+                }
+                HutaoNotificationHelper.cancelUpdateNotifications(appContext);
+                return;
+            }
 
             if (latestCode > installedVersionCode && latestCode > lastNotifiedCode && !versionName.isEmpty()) {
                 HutaoNotificationHelper.showUpdateAvailableNotification(
@@ -173,6 +186,57 @@ public class NotificationSyncJobService extends JobService {
         } catch (Exception e) {
             Log.d(TAG, "Background announcement check skipped: " + e.getMessage());
         }
+    }
+
+    private static void checkCustomPushNotifications(Context appContext, String baseUrl) {
+        try {
+            String raw = httpGetString(baseUrl + "/api/push-notifications/latest");
+            if (raw == null || raw.isEmpty()) return;
+
+            JSONObject wrapper = new JSONObject(raw);
+            JSONObject notif = wrapper.optJSONObject("notification");
+            if (notif == null) return;
+
+            int id = notif.optInt("id", 0);
+            if (id < 1) return;
+
+            SharedPreferences prefs = HutaoNotificationHelper.prefs(appContext);
+            int lastSeenId = prefs.getInt(HutaoNotificationHelper.KEY_LAST_CUSTOM_PUSH_ID, -1);
+            if (id <= lastSeenId) return;
+
+            // On a brand-new install, deliver if sent within the last 6 hours; otherwise record silently
+            if (lastSeenId == -1) {
+                String createdAt = notif.optString("createdAt", "");
+                long ageMs = parseIsoAgeMillis(createdAt);
+                if (ageMs > 6L * 60L * 60L * 1000L) {
+                    prefs.edit().putInt(HutaoNotificationHelper.KEY_LAST_CUSTOM_PUSH_ID, id).apply();
+                    return;
+                }
+            }
+
+            HutaoNotificationHelper.showCustomPushNotification(
+                appContext,
+                id,
+                notif.optString("title", "HutaoTik Alert"),
+                notif.optString("body", ""),
+                notif.optString("accentType", "info"),
+                notif.optString("targetRoute", "/")
+            );
+        } catch (Throwable e) {
+            Log.d(TAG, "Background custom push check skipped: " + e.getMessage());
+        }
+    }
+
+    private static long parseIsoAgeMillis(String isoTimestamp) {
+        if (isoTimestamp == null || isoTimestamp.trim().isEmpty()) return 0L;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                long epochMs = java.time.Instant.parse(isoTimestamp.trim()).toEpochMilli();
+                return Math.max(0L, System.currentTimeMillis() - epochMs);
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
     }
 
     private static int getInstalledVersionCode(Context context) {
