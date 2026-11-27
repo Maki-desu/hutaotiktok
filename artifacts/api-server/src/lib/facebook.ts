@@ -1,10 +1,15 @@
 import { execFile, spawn } from "child_process";
+import { existsSync } from "fs";
 import { resolve } from "path";
 import { promisify } from "util";
 import { logger } from "./logger";
 import { cobaltFetch } from "./cobalt";
 
 const execFileAsync = promisify(execFile);
+const FACEBOOK_INFO_CACHE_TTL_MS = 300_000;
+const facebookInfoCache = new Map<string, { expiresAt: number; info: FacebookVideoInfo }>();
+const facebookInfoInFlight = new Map<string, Promise<FacebookVideoInfo | null>>();
+let preferredYtDlpCommand: { cmd: string; args: string[] } | null = null;
 
 export interface FacebookVideoInfo {
   title: string;
@@ -28,15 +33,19 @@ interface YtDlpOutput {
 }
 
 function getYtDlpCommands() {
+  const binaryName = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  const localPaths = [
+    resolve(process.cwd(), binaryName),
+    resolve(process.cwd(), "../../", binaryName),
+  ].filter((candidate) => existsSync(candidate));
+
   const commands = [
+    ...(preferredYtDlpCommand ? [preferredYtDlpCommand] : []),
     ...(process.env.YT_DLP_PATH ? [{ cmd: process.env.YT_DLP_PATH, args: [] as string[] }] : []),
-    { cmd: "python", args: ["-m", "yt_dlp"] },
+    ...localPaths.map((cmd) => ({ cmd, args: [] as string[] })),
+    { cmd: "yt-dlp", args: [] as string[] },
     { cmd: "python3", args: ["-m", "yt_dlp"] },
-    { cmd: "yt-dlp", args: [] },
-    {
-      cmd: resolve(process.cwd(), process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
-      args: [],
-    },
+    { cmd: "python", args: ["-m", "yt_dlp"] },
   ];
 
   return commands.filter(
@@ -50,7 +59,8 @@ function getYtDlpCommands() {
 }
 
 async function fetchViaYtdlp(url: string): Promise<FacebookVideoInfo | null> {
-  for (const { cmd, args } of getYtDlpCommands()) {
+  for (const command of getYtDlpCommands()) {
+    const { cmd, args } = command;
     try {
       const fullArgs = [
         ...args,
@@ -58,12 +68,13 @@ async function fetchViaYtdlp(url: string): Promise<FacebookVideoInfo | null> {
         "--no-playlist",
         "--no-warnings",
         "--no-check-certificates",
-        "--socket-timeout", "25",
+        "--socket-timeout", "12",
         "--add-header", "Referer:https://www.facebook.com/",
         url,
       ];
 
-      const { stdout } = await execFileAsync(cmd, fullArgs, { timeout: 35_000 });
+      const { stdout } = await execFileAsync(cmd, fullArgs, { timeout: 25_000, maxBuffer: 6 * 1024 * 1024 });
+      preferredYtDlpCommand = command;
       const data = JSON.parse(stdout) as YtDlpOutput;
 
       let hdUrl: string | null = null;
@@ -115,11 +126,35 @@ async function fetchViaCobalt(url: string): Promise<FacebookVideoInfo | null> {
 }
 
 export async function fetchFacebookVideoInfo(url: string): Promise<FacebookVideoInfo | null> {
-  const ytdlpResult = await fetchViaYtdlp(url);
-  if (ytdlpResult) return ytdlpResult;
+  const cacheKey = url.trim();
+  const cached = facebookInfoCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.info;
 
-  logger.info({ url }, "facebook: yt-dlp failed, trying cobalt fallback");
-  return fetchViaCobalt(url);
+  const existing = facebookInfoInFlight.get(cacheKey);
+  if (existing) return existing;
+
+  const task = (async (): Promise<FacebookVideoInfo | null> => {
+    const ytdlpResult = await fetchViaYtdlp(url);
+    const resolved = ytdlpResult ?? (
+      logger.info({ url }, "facebook: yt-dlp failed, trying cobalt fallback"),
+      await fetchViaCobalt(url)
+    );
+    if (resolved) {
+      if (facebookInfoCache.size >= 200) {
+        const oldest = facebookInfoCache.keys().next().value;
+        if (oldest) facebookInfoCache.delete(oldest);
+      }
+      facebookInfoCache.set(cacheKey, { expiresAt: Date.now() + FACEBOOK_INFO_CACHE_TTL_MS, info: resolved });
+    }
+    return resolved;
+  })();
+
+  facebookInfoInFlight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    facebookInfoInFlight.delete(cacheKey);
+  }
 }
 
 export async function spawnFacebookAudioDownload(url: string) {

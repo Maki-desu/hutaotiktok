@@ -335,7 +335,11 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         {/* Header row */}
-        <header className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2 gap-2.5">
+        <header
+          data-testid="app-top-header"
+          className="relative z-10 flex items-center justify-between px-4 pb-2 gap-2.5 transition-[padding] duration-200"
+          style={{ paddingTop: "var(--top-bar-offset, 16px)" }}
+        >
           <div className="relative shrink-0">
             <button
               type="button"

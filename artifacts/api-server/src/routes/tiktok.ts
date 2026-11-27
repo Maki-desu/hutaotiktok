@@ -17,10 +17,19 @@ const YT_DLP = process.env.YT_DLP_PATH ?? [
 const TIKWM_APIS = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"];
 
 const rateLimitMap = new Map<string, number>();
-const RATE_LIMIT_MS = 3000;
-const TIKWM_TIMEOUT_MS = 6_000;
-const TIKWM_MIN_INTERVAL_MS = 1100;
-const TIKWM_CACHE_TTL_MS = 60_000;
+const RATE_LIMIT_MS = 1000;
+const TIKWM_TIMEOUT_MS = 22_000;
+const TIKWM_MIN_INTERVAL_MS = 850;
+const TIKWM_CACHE_TTL_MS = 300_000;
+
+function resolveTikwmUrl(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (trimmed.startsWith("/")) return `https://www.tikwm.com${trimmed}`;
+  return trimmed;
+}
 
 interface TikwmApiResponse {
   code: number;
@@ -226,8 +235,8 @@ async function fetchTikTokWithYtDlp(url: string): Promise<TikwmApiResponse | nul
   try {
     const { stdout } = await execFileAsync(
       YT_DLP,
-      ["--dump-single-json", "--no-playlist", "--no-warnings", "--socket-timeout", "12", url],
-      { timeout: 18_000, maxBuffer: 5 * 1024 * 1024 }
+      ["--dump-single-json", "--no-playlist", "--no-warnings", "--no-check-certificates", "--socket-timeout", "12", url],
+      { timeout: 20_000, maxBuffer: 5 * 1024 * 1024 }
     );
     const video = JSON.parse(stdout) as YtDlpTikTokData;
     const hasAudio = (format: YtDlpFormat) =>
@@ -334,7 +343,10 @@ async function fetchTikTokData(url: string): Promise<TikwmApiResponse> {
   }
 
   const fallback = await fetchTikTokWithYtDlp(url);
-  if (fallback) return fallback;
+  if (fallback) {
+    tikwmCache.set(url, { expiresAt: Date.now() + TIKWM_CACHE_TTL_MS, response: fallback });
+    return fallback;
+  }
 
   if (hasConfiguredCobaltApi()) {
     logger.warn("TikTok yt-dlp lookup failed; trying self-hosted Cobalt");
@@ -488,28 +500,34 @@ router.post("/tiktok/fetch", async (req, res): Promise<void> => {
     }
 
     const d = data.data;
-    const isPhoto = !!(d.images && d.images.length > 0);
+    const photos = (d.images || []).map((img) => resolveTikwmUrl(img)).filter((img): img is string => Boolean(img));
+    const isPhoto = photos.length > 0;
+    const playUrl = resolveTikwmUrl(d.play);
+    const hdPlayUrl = resolveTikwmUrl(d.hdplay);
+    const wmPlayUrl = resolveTikwmUrl(d.wmplay);
+    const musicUrl = resolveTikwmUrl(d.music);
+    const musicInfoPlayUrl = resolveTikwmUrl(d.music_info?.play);
 
     res.json({
-      id: d.id,
+      id: d.id ? String(d.id) : "",
       title: d.title || "Untitled",
       author: d.author?.nickname || d.author?.unique_id || "Unknown",
       authorUsername: d.author?.unique_id ?? "unknown",
-      authorAvatar: d.author?.avatar || null,
-      thumbnail: d.cover || null,
+      authorAvatar: resolveTikwmUrl(d.author?.avatar),
+      thumbnail: resolveTikwmUrl(d.cover) || resolveTikwmUrl(d.origin_cover),
       duration: d.duration || null,
       downloadUrls: {
-        hd: d.hdplay || d.play || null,
-        normal: d.play || null,
-        low: d.wmplay || d.play || null,
-        audio: d.music || null,
+        hd: hdPlayUrl || playUrl || null,
+        normal: playUrl || null,
+        low: wmPlayUrl || playUrl || null,
+        audio: musicUrl || musicInfoPlayUrl || null,
       },
       isPhoto,
-      photos: d.images || [],
+      photos,
       music: {
         title: d.music_info?.title || "Unknown",
         author: d.music_info?.author || "Unknown",
-        url: d.music_info?.play || null,
+        url: musicInfoPlayUrl || musicUrl || null,
       },
     });
   } catch (err) {

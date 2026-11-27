@@ -20,6 +20,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -284,8 +289,8 @@ public final class SocialMediaExtractor {
             try {
                 conn = openConnection(current, "GET", null);
                 conn.setInstanceFollowRedirects(false);
-                conn.setConnectTimeout(15_000);
-                conn.setReadTimeout(15_000);
+                conn.setConnectTimeout(6_000);
+                conn.setReadTimeout(7_000);
                 int status = conn.getResponseCode();
                 if (status >= 300 && status < 400) {
                     String location = conn.getHeaderField("Location");
@@ -492,23 +497,64 @@ public final class SocialMediaExtractor {
                 "https://www.instagram.com/reel/" + shortcode + "/embed/captioned/",
             };
 
-        for (String embedUrl : embedUrls) {
+        // Fast parallel probe: race primary embed endpoint vs primary GraphQL query simultaneously
+        String primaryEmbedUrl = embedUrls[0];
+        String primaryDocId = IG_GRAPHQL_DOC_IDS[0];
+        ExecutorService probePool = Executors.newFixedThreadPool(2);
+        try {
+            CompletionService<ExtractedMedia> completion = new ExecutorCompletionService<>(probePool);
+            Future<ExtractedMedia> embedFuture = completion.submit(() -> {
+                Map<String, String> headers = buildBrowserHeaders("https://www.instagram.com/");
+                headers.put("Sec-Fetch-Dest", "iframe");
+                headers.put("Sec-Fetch-Mode", "navigate");
+                String html = fetchText(primaryEmbedUrl, headers);
+                if (html == null || html.isEmpty()) return null;
+                return parseInstagramEmbedHtml(shortcode, canonicalUrl, urlIndicatesVideo, html);
+            });
+            Future<ExtractedMedia> gqlFuture = completion.submit(() -> {
+                String json = fetchInstagramGraphQl(shortcode, canonicalUrl, primaryDocId, null);
+                if (json == null || json.isEmpty()) return null;
+                return parseInstagramGraphQlJson(shortcode, canonicalUrl, urlIndicatesVideo, json);
+            });
+
+            for (int completed = 0; completed < 2; completed++) {
+                try {
+                    ExtractedMedia candidate = completion.take().get();
+                    if (candidate != null) {
+                        if (candidate.hasDownloadableVideo()) {
+                            embedFuture.cancel(true);
+                            gqlFuture.cancel(true);
+                            return candidate;
+                        }
+                        if (imageFallback == null && candidate.hasDownloadableImage() && !candidate.isVideoPost) {
+                            imageFallback = candidate;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        } finally {
+            probePool.shutdownNow();
+        }
+
+        // Secondary embed fallback if primary missed
+        if (embedUrls.length > 1) {
             Map<String, String> headers = buildBrowserHeaders("https://www.instagram.com/");
             headers.put("Sec-Fetch-Dest", "iframe");
             headers.put("Sec-Fetch-Mode", "navigate");
-            String html = fetchText(embedUrl, headers);
-            if (html == null || html.isEmpty()) continue;
-
-            ExtractedMedia parsed = parseInstagramEmbedHtml(shortcode, canonicalUrl, urlIndicatesVideo, html);
-            if (parsed != null) {
-                if (parsed.hasDownloadableVideo()) return parsed;
-                if (imageFallback == null && parsed.hasDownloadableImage() && !parsed.isVideoPost) {
-                    imageFallback = parsed;
+            String html = fetchText(embedUrls[1], headers);
+            if (html != null && !html.isEmpty()) {
+                ExtractedMedia parsed = parseInstagramEmbedHtml(shortcode, canonicalUrl, urlIndicatesVideo, html);
+                if (parsed != null) {
+                    if (parsed.hasDownloadableVideo()) return parsed;
+                    if (imageFallback == null && parsed.hasDownloadableImage() && !parsed.isVideoPost) {
+                        imageFallback = parsed;
+                    }
                 }
             }
         }
 
-        // Tier B: Public web page HTML (also harvests LSD token for GraphQL)
+        // Tier B: Public web page HTML (also harvests LSD token for GraphQL fallback)
         String lsdToken = null;
         String pageHtml = fetchText(canonicalUrl, buildBrowserHeaders("https://www.instagram.com/"));
         if (pageHtml != null && !pageHtml.isEmpty()) {
@@ -525,9 +571,10 @@ public final class SocialMediaExtractor {
             }
         }
 
-        // Tier C: Instagram public persisted GraphQL query (PolarisPostActionLoadPostQueryQuery)
-        for (String docId : IG_GRAPHQL_DOC_IDS) {
-            String json = fetchInstagramGraphQl(shortcode, canonicalUrl, docId, lsdToken);
+        // Tier C: Secondary GraphQL query (with harvested LSD token if available)
+        for (int i = 0; i < IG_GRAPHQL_DOC_IDS.length; i++) {
+            if (i == 0 && lsdToken == null) continue;
+            String json = fetchInstagramGraphQl(shortcode, canonicalUrl, IG_GRAPHQL_DOC_IDS[i], lsdToken);
             if (json == null || json.isEmpty()) continue;
             ExtractedMedia fromGql = parseInstagramGraphQlJson(shortcode, canonicalUrl, urlIndicatesVideo, json);
             if (fromGql != null) {
@@ -866,8 +913,8 @@ public final class SocialMediaExtractor {
             byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
             conn = openConnection("https://www.instagram.com/graphql/query", "POST", headers);
             conn.setDoOutput(true);
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(20_000);
+            conn.setConnectTimeout(6_000);
+            conn.setReadTimeout(9_000);
             try (OutputStream out = conn.getOutputStream()) {
                 out.write(payload);
             }
@@ -1421,8 +1468,8 @@ public final class SocialMediaExtractor {
         try {
             conn = openConnection(rawUrl, "GET", headers);
             conn.setInstanceFollowRedirects(true);
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(20_000);
+            conn.setConnectTimeout(6_000);
+            conn.setReadTimeout(9_000);
             int status = conn.getResponseCode();
             if (status < 200 || status >= 300) return null;
             return readTextStream(conn.getInputStream(), 4 * 1024 * 1024);

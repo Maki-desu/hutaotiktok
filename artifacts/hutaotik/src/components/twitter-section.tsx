@@ -28,6 +28,12 @@ import {
   isNativeBackgroundDownloadAvailable,
 } from "@/lib/background-download";
 import { fetchTwitterFromFx } from "@/lib/twitter-fx";
+import { createTimedCache, raceFastest } from "@/lib/fetch-cache";
+import {
+  fetchTwitterInfoOnDevice,
+  isNativeTwitterFetchAvailable,
+} from "@/lib/background-fetch";
+import { notifyWebFetchComplete } from "@/lib/notifications";
 import { useToast } from "@/hooks/use-toast";
 
 interface TwitterFormat {
@@ -82,10 +88,28 @@ async function parseApiResponse<T>(response: Response, platform: string): Promis
   return data as T;
 }
 
+const twitterInfoCache = createTimedCache<TwitterInfo>(300_000, 60);
+
+export function seedTwitterInfoCache(url: string, data: unknown): void {
+  if (!data || typeof data !== "object") return;
+  const info = data as Partial<TwitterInfo>;
+  if (!Array.isArray(info.formats) || info.formats.length === 0) return;
+  twitterInfoCache.set(url, {
+    id: info.id ?? "",
+    title: info.title ?? "X Video",
+    thumbnail: info.thumbnail ?? null,
+    channelName: info.channelName ?? "X Creator",
+    duration: info.duration ?? 0,
+    isGif: info.isGif,
+    formats: info.formats,
+  });
+}
+
 export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [info, setInfo] = useState<TwitterInfo | null>(null);
   const [selectedHeight, setSelectedHeight] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<string>("Fetching X video…");
   const [downloadingMode, setDownloadingMode] = useState<"mp4" | "gif" | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -98,34 +122,60 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   const downloading = downloadingMode !== null;
 
   useEffect(() => {
+    const cached = twitterInfoCache.get(url);
+    if (cached) {
+      setInfo(cached);
+      setSelectedHeight(cached.formats.length > 0 ? cached.formats[0].height : null);
+      setError(null);
+      setLoading(false);
+      setDownloadSuccessInfo(null);
+      return;
+    }
+
     const controller = new AbortController();
     setLoading(true);
+    setFetchStatus("Fetching in background — safe to exit app…");
     setInfo(null);
     setSelectedHeight(null);
     setError(null);
     setDownloadSuccessInfo(null);
 
-    const requestInfo = async () => {
-      try {
-        const response = await fetch(apiUrl(`/api/twitter/info?url=${encodeURIComponent(url)}`), {
-          signal: controller.signal,
-        });
-        if (response.ok) {
-          const data = await parseApiResponse<TwitterInfo>(response, "X video information");
-          if (data.formats.length > 0) return data;
-        } else {
-          await response.body?.cancel();
+    const requestInfo = async (): Promise<TwitterInfo> => {
+      if (isNativeTwitterFetchAvailable()) {
+        try {
+          return await fetchTwitterInfoOnDevice(url, (progress) => {
+            if (progress.status) setFetchStatus(progress.status);
+          });
+        } catch (nativeErr) {
+          if (controller.signal.aborted) throw nativeErr;
+          if (nativeErr instanceof Error && /cancelled/i.test(nativeErr.message)) {
+            throw nativeErr;
+          }
         }
-      } catch (cause) {
-        if (controller.signal.aborted) throw cause;
       }
-
-      return fetchTwitterFromFx(url, controller.signal);
+      return raceFastest<TwitterInfo>(
+        [
+          (childSignal) => fetchTwitterFromFx(url, childSignal),
+          async (childSignal) => {
+            const response = await fetch(apiUrl(`/api/twitter/info?url=${encodeURIComponent(url)}`), {
+              signal: childSignal,
+            });
+            const data = await parseApiResponse<TwitterInfo>(response, "X video information");
+            if (data.formats.length === 0) {
+              throw new Error("No downloadable video or GIF was found in this X post.");
+            }
+            return data;
+          },
+        ],
+        controller.signal,
+      );
     };
 
     requestInfo()
       .then((data) => {
         if (controller.signal.aborted) return;
+        twitterInfoCache.set(url, data);
+        notifyWebFetchComplete("X", data.title);
         setInfo(data);
         if (data.formats.length > 0) {
           setSelectedHeight(data.formats[0].height);
@@ -418,6 +468,10 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
             <Skeleton className="h-3 w-1/2 bg-secondary/60 rounded-lg" />
             <Skeleton className="h-7 w-16 bg-secondary/60 rounded-full" />
           </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+          <span className="truncate">{fetchStatus} · You can leave the app &amp; we&apos;ll notify you when ready.</span>
         </div>
       </div>
     );

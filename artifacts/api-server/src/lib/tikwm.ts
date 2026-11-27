@@ -156,9 +156,15 @@ export async function fetchTikwmVideo(tiktokUrl: string): Promise<TikwmVideoData
   try {
     const res = await fetch(`${TIKWM_BASE}/`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://www.tikwm.com",
+        "Referer": "https://www.tikwm.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      },
       body: new URLSearchParams({ url: tiktokUrl, hd: "1" }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(22_000),
     });
 
     if (!res.ok) return null;

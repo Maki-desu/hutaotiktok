@@ -80,3 +80,81 @@ export function onDisplayScaleChanged(listener: (scale: number) => void): () => 
   window.addEventListener(DISPLAY_SCALE_CHANGED_EVENT, handler);
   return () => window.removeEventListener(DISPLAY_SCALE_CHANGED_EVENT, handler);
 }
+
+export const MIN_TOP_BAR_OFFSET = 0;
+export const MAX_TOP_BAR_OFFSET = 96;
+export const DEFAULT_TOP_BAR_OFFSET = 16;
+export const TOP_BAR_OFFSET_STEP = 4;
+
+export const TOP_BAR_OFFSET_STORAGE_KEY = "hutaotik-top-bar-offset";
+export const TOP_BAR_OFFSET_CHANGED_EVENT = "hutaotik:top-bar-offset-changed";
+
+export function clampTopBarOffset(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_TOP_BAR_OFFSET;
+  }
+  const stepped = Math.round(value / TOP_BAR_OFFSET_STEP) * TOP_BAR_OFFSET_STEP;
+  return Math.max(MIN_TOP_BAR_OFFSET, Math.min(MAX_TOP_BAR_OFFSET, stepped));
+}
+
+export function describeTopBarOffset(offset: number): string {
+  const clamped = clampTopBarOffset(offset);
+  if (clamped <= 8) return "Very High";
+  if (clamped <= 20) return "Default";
+  if (clamped <= 40) return "Lower";
+  if (clamped <= 68) return "Notch Safe";
+  return "Extra Low";
+}
+
+export function loadTopBarOffset(): number {
+  try {
+    const raw = localStorage.getItem(TOP_BAR_OFFSET_STORAGE_KEY);
+    if (raw === null || raw === "") return DEFAULT_TOP_BAR_OFFSET;
+    const parsed = Number.parseFloat(raw);
+    return clampTopBarOffset(parsed);
+  } catch {
+    return DEFAULT_TOP_BAR_OFFSET;
+  }
+}
+
+export function applyTopBarOffset(offset: number): number {
+  const clamped = clampTopBarOffset(offset);
+  if (typeof document !== "undefined" && document.documentElement) {
+    const root = document.documentElement;
+    root.style.setProperty("--top-bar-offset", `${clamped}px`);
+    root.dataset.topBarOffset = String(clamped);
+  }
+  return clamped;
+}
+
+export function saveTopBarOffset(offset: number): number {
+  const clamped = applyTopBarOffset(offset);
+  try {
+    localStorage.setItem(TOP_BAR_OFFSET_STORAGE_KEY, String(clamped));
+  } catch {
+    /* ignore storage write errors */
+  }
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    try {
+      window.dispatchEvent(new CustomEvent<number>(TOP_BAR_OFFSET_CHANGED_EVENT, { detail: clamped }));
+    } catch {
+      window.dispatchEvent(new Event(TOP_BAR_OFFSET_CHANGED_EVENT));
+    }
+  }
+  return clamped;
+}
+
+export function onTopBarOffsetChanged(listener: (offset: number) => void): () => void {
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+    return () => {};
+  }
+  const handler = (event: Event) => {
+    if (event instanceof CustomEvent && typeof event.detail === "number") {
+      listener(clampTopBarOffset(event.detail));
+    } else {
+      listener(loadTopBarOffset());
+    }
+  };
+  window.addEventListener(TOP_BAR_OFFSET_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(TOP_BAR_OFFSET_CHANGED_EVENT, handler);
+}

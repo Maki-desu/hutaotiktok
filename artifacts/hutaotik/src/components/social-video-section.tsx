@@ -20,6 +20,8 @@ import {
 } from "@/lib/download-progress";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
+import { createTimedCache } from "@/lib/fetch-cache";
+import { notifyWebFetchComplete } from "@/lib/notifications";
 import {
   downloadSocialVideoOnDevice,
   fetchSocialVideoInfoOnDevice,
@@ -95,11 +97,26 @@ function formatDuration(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
+const socialInfoCache = createTimedCache<SocialVideoInfo>(300_000, 60);
+
+export function seedSocialInfoCache(
+  platform: SocialVideoPlatform,
+  url: string,
+  data: unknown,
+): void {
+  if (!isSocialVideoInfo(data)) return;
+  socialInfoCache.set(`${platform}:${url}`, {
+    ...data,
+    mediaType: data.mediaType === "image" ? "image" : "video",
+  });
+}
+
 export function SocialVideoSection({ platform, url, folderName, onOpenFolderPicker }: Props) {
   const providerName = platform === "instagram" ? "Instagram" : "Pinterest";
   const ProviderIcon = platform === "instagram" ? SiInstagram : SiPinterest;
   const [info, setInfo] = useState<SocialVideoInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<string>("Finding the highest available quality…");
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -112,8 +129,22 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
   const { toast } = useToast();
 
   useEffect(() => {
+    const cacheKey = `${platform}:${url}`;
+    if (retryCount === 0) {
+      const cached = socialInfoCache.get(cacheKey);
+      if (cached) {
+        setInfo(cached);
+        setError(null);
+        setLoading(false);
+        setThumbFailed(false);
+        setDownloadSuccessInfo(null);
+        return;
+      }
+    }
+
     const controller = new AbortController();
     setLoading(true);
+    setFetchStatus(`Fetching ${providerName} in background…`);
     setInfo(null);
     setError(null);
     setThumbFailed(false);
@@ -123,7 +154,9 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
       let nativeError: unknown = null;
       if (isNativeSocialVideoAvailable()) {
         try {
-          return await fetchSocialVideoInfoOnDevice(platform, url);
+          return await fetchSocialVideoInfoOnDevice(platform, url, (progress) => {
+            if (progress.status) setFetchStatus(progress.status);
+          });
         } catch (err) {
           nativeError = err;
         }
@@ -150,7 +183,11 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
 
     void loadInfo()
       .then((data) => {
-        if (!controller.signal.aborted) setInfo(data);
+        if (!controller.signal.aborted) {
+          socialInfoCache.set(cacheKey, data);
+          notifyWebFetchComplete(providerName, data.title);
+          setInfo(data);
+        }
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
@@ -305,9 +342,9 @@ export function SocialVideoSection({ platform, url, folderName, onOpenFolderPick
             <Skeleton className="h-3 w-1/2" />
           </div>
         </div>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Finding the highest available quality…
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+          <span className="truncate">{fetchStatus} · Safe to leave the app, we&apos;ll notify you when ready.</span>
         </div>
       </div>
     );

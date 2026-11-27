@@ -7,12 +7,18 @@ import {
   installGlobalTapBounce,
   loadBounceAnimationEnabled,
 } from "@/lib/bounce-animation";
-import { applyDisplayScale, loadDisplayScale } from "@/lib/display-scale";
+import {
+  applyDisplayScale,
+  applyTopBarOffset,
+  loadDisplayScale,
+  loadTopBarOffset,
+} from "@/lib/display-scale";
 import { applyFontStyle, loadFontStyle } from "@/lib/font-style";
 
 applyBounceAnimation(loadBounceAnimationEnabled());
 installGlobalTapBounce();
 applyDisplayScale(loadDisplayScale());
+applyTopBarOffset(loadTopBarOffset());
 applyFontStyle(loadFontStyle());
 setBaseUrl(import.meta.env.VITE_API_URL || null);
 

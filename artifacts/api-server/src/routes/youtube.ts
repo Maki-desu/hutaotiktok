@@ -11,12 +11,20 @@ import { db, adminSettingsTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
+let youtubeEnabledCache: { value: boolean; expiresAt: number } | null = null;
+
 async function isYouTubeEnabled(): Promise<boolean> {
+  const now = Date.now();
+  if (youtubeEnabledCache && youtubeEnabledCache.expiresAt > now) {
+    return youtubeEnabledCache.value;
+  }
   const [s] = await db
     .select({ youtubeEnabled: adminSettingsTable.youtubeEnabled })
     .from(adminSettingsTable)
     .limit(1);
-  return s?.youtubeEnabled !== false;
+  const enabled = s?.youtubeEnabled !== false;
+  youtubeEnabledCache = { value: enabled, expiresAt: now + 30_000 };
+  return enabled;
 }
 
 router.get("/youtube/info", async (req, res): Promise<void> => {

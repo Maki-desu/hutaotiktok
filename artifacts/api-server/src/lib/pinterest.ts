@@ -15,6 +15,10 @@ const DESKTOP_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 const IG_APP_ID = "936619743392459";
 const IG_GRAPHQL_DOC_IDS = ["8845758582119845", "10015901848480474"];
+const SOCIAL_INFO_CACHE_TTL_MS = 300_000;
+const socialInfoCache = new Map<string, { expiresAt: number; info: SocialVideoInfo }>();
+const socialInfoInFlight = new Map<string, Promise<SocialVideoInfo | null>>();
+let preferredSocialYtDlpCommand: { cmd: string; args: string[] } | null = null;
 
 const VIDEO_HOSTS = {
   pinterest: new Set(["pinterest.com", "pin.it", "pinimg.com"]),
@@ -184,7 +188,7 @@ async function resolveCanonicalUrl(platform: SocialVideoPlatform, rawUrl: string
         method: "GET",
         redirect: "manual",
         headers: { "User-Agent": DESKTOP_USER_AGENT, "Accept-Language": "en-US,en;q=0.9" },
-        signal: AbortSignal.timeout(12_000),
+        signal: AbortSignal.timeout(7_000),
       });
       await res.body?.cancel();
       if (res.status < 300 || res.status >= 400) break;
@@ -322,7 +326,7 @@ async function extractPinterestDirect(canonicalUrl: string): Promise<DirectSocia
         "Accept-Language": "en-US,en;q=0.9",
         Referer: "https://www.pinterest.com/",
       },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return null;
     const html = await res.text();
@@ -548,7 +552,7 @@ async function extractInstagramDirect(canonicalUrl: string): Promise<DirectSocia
         `https://www.instagram.com/reel/${shortcode}/embed/captioned/`,
       ];
 
-  for (const embedUrl of embedUrls) {
+  const fetchEmbed = async (embedUrl: string): Promise<DirectSocialMedia | null> => {
     try {
       const res = await fetch(embedUrl, {
         headers: {
@@ -556,9 +560,9 @@ async function extractInstagramDirect(canonicalUrl: string): Promise<DirectSocia
           "Accept-Language": "en-US,en;q=0.9",
           Referer: "https://www.instagram.com/",
         },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(8_000),
       });
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const html = await res.text();
 
       const additional = html.match(/window\.__additionalDataLoaded\(\s*['"][^'"]+['"]\s*,\s*(\{[\s\S]*?\})\s*\)\s*;/);
@@ -570,8 +574,7 @@ async function extractInstagramDirect(canonicalUrl: string): Promise<DirectSocia
             canonicalUrl,
             urlIndicatesVideo,
           );
-          if (result?.info.mediaType === "video") return result;
-          if (result && !result.isVideoPost && !imageFallback) imageFallback = result;
+          if (result) return result;
         } catch {
           // continue to regex fallback
         }
@@ -600,13 +603,13 @@ async function extractInstagramDirect(canonicalUrl: string): Promise<DirectSocia
           isVideoPost: true,
         };
       }
+      return null;
     } catch {
-      // try next embed URL
+      return null;
     }
-  }
+  };
 
-  // 2. Try Instagram public GraphQL query
-  for (const docId of IG_GRAPHQL_DOC_IDS) {
+  const fetchGraphQl = async (docId: string): Promise<DirectSocialMedia | null> => {
     try {
       const variables = JSON.stringify({
         shortcode,
@@ -626,16 +629,34 @@ async function extractInstagramDirect(canonicalUrl: string): Promise<DirectSocia
           "X-FB-Friendly-Name": "PolarisPostActionLoadPostQueryQuery",
         },
         body: new URLSearchParams({ variables, doc_id: docId }).toString(),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(8_000),
       });
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const data = (await res.json()) as Record<string, unknown>;
-      const result = parseInstagramMediaNode(data, shortcode, canonicalUrl, urlIndicatesVideo);
-      if (result?.info.mediaType === "video") return result;
-      if (result && !result.isVideoPost && !imageFallback) imageFallback = result;
+      return parseInstagramMediaNode(data, shortcode, canonicalUrl, urlIndicatesVideo);
     } catch {
-      // try next doc_id
+      return null;
     }
+  };
+
+  // Fast parallel probe: race primary embed endpoint vs primary GraphQL query
+  const primaryResults = await Promise.all([
+    fetchEmbed(embedUrls[0]),
+    fetchGraphQl(IG_GRAPHQL_DOC_IDS[0]),
+  ]);
+  for (const res of primaryResults) {
+    if (res?.info.mediaType === "video") return res;
+    if (res && !res.isVideoPost && !imageFallback) imageFallback = res;
+  }
+
+  // Secondary parallel fallback if both primary probes missed video
+  const secondaryResults = await Promise.all([
+    embedUrls[1] ? fetchEmbed(embedUrls[1]) : Promise.resolve(null),
+    IG_GRAPHQL_DOC_IDS[1] ? fetchGraphQl(IG_GRAPHQL_DOC_IDS[1]) : Promise.resolve(null),
+  ]);
+  for (const res of secondaryResults) {
+    if (res?.info.mediaType === "video") return res;
+    if (res && !res.isVideoPost && !imageFallback) imageFallback = res;
   }
 
   return imageFallback;
@@ -649,6 +670,7 @@ function getYtDlpCommands(): Array<{ cmd: string; args: string[] }> {
   ].filter((candidate) => existsSync(candidate));
 
   const commands: Array<{ cmd: string; args: string[] }> = [
+    ...(preferredSocialYtDlpCommand ? [preferredSocialYtDlpCommand] : []),
     ...(process.env.YT_DLP_PATH ? [{ cmd: process.env.YT_DLP_PATH, args: [] }] : []),
     ...localPaths.map((cmd) => ({ cmd, args: [] })),
     { cmd: "yt-dlp", args: [] },
@@ -689,7 +711,7 @@ async function fetchViaCobalt(url: string, platform: SocialVideoPlatform): Promi
   };
 }
 
-async function fetchSocialVideoInfo(
+async function fetchSocialVideoInfoUncached(
   url: string,
   platform: SocialVideoPlatform,
 ): Promise<SocialVideoInfo | null> {
@@ -706,7 +728,8 @@ async function fetchSocialVideoInfo(
   }
 
   // Tier 2: yt-dlp extraction
-  for (const { cmd, args } of getYtDlpCommands()) {
+  for (const command of getYtDlpCommands()) {
+    const { cmd, args } = command;
     try {
       const { stdout } = await execFileAsync(
         cmd,
@@ -717,11 +740,12 @@ async function fetchSocialVideoInfo(
           "--playlist-items", "1",
           "--no-warnings",
           "--no-check-certificates",
-          "--socket-timeout", "25",
+          "--socket-timeout", "12",
           canonicalUrl,
         ],
-        { timeout: 45_000, maxBuffer: 10 * 1024 * 1024 },
+        { timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
       );
+      preferredSocialYtDlpCommand = command;
       const data = JSON.parse(stdout) as YtDlpOutput;
       const heights = (data.formats ?? [])
         .filter((format) =>
@@ -767,6 +791,37 @@ async function fetchSocialVideoInfo(
   // Tier 4: Self-hosted Cobalt fallback
   logger.warn({ url: canonicalUrl, platform }, "social video: direct and yt-dlp failed, trying Cobalt fallback");
   return fetchViaCobalt(canonicalUrl, platform);
+}
+
+async function fetchSocialVideoInfo(
+  url: string,
+  platform: SocialVideoPlatform,
+): Promise<SocialVideoInfo | null> {
+  if (!isSocialVideoUrl(url, platform)) return null;
+  const cacheKey = `${platform}:${url.trim()}`;
+  const cached = socialInfoCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.info;
+
+  const existing = socialInfoInFlight.get(cacheKey);
+  if (existing) return existing;
+
+  const task = fetchSocialVideoInfoUncached(url, platform).then((info) => {
+    if (info) {
+      if (socialInfoCache.size >= 250) {
+        const oldest = socialInfoCache.keys().next().value;
+        if (oldest) socialInfoCache.delete(oldest);
+      }
+      socialInfoCache.set(cacheKey, { expiresAt: Date.now() + SOCIAL_INFO_CACHE_TTL_MS, info });
+    }
+    return info;
+  });
+
+  socialInfoInFlight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    socialInfoInFlight.delete(cacheKey);
+  }
 }
 
 export function fetchPinterestInfo(url: string): Promise<SocialVideoInfo | null> {

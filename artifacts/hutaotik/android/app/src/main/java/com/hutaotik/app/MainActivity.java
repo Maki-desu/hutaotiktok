@@ -53,18 +53,24 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CompletionService;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -80,15 +86,79 @@ public class MainActivity extends BridgeActivity {
     private static final String FACEBOOK_FOLDER_PREF = "facebook_download_folder_uri";
     private static final AtomicReference<String> pendingSharedText = new AtomicReference<>();
     private static final AtomicReference<String> pendingNotificationRoute = new AtomicReference<>();
+    private static final AtomicReference<String> PENDING_BACKGROUND_FETCH = new AtomicReference<>();
+    private static volatile String pendingBackgroundFetchRequestId;
     private static final ExecutorService NATIVE_TOOLS_INIT_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean NATIVE_TOOLS_INIT_STARTED = new AtomicBoolean(false);
     private static final CountDownLatch YTDLP_INIT_LATCH = new CountDownLatch(1);
     private static final CountDownLatch FFMPEG_INIT_LATCH = new CountDownLatch(1);
     private static final AtomicLong LAST_RENDER_RECOVERY_AT = new AtomicLong(0L);
     private static final AtomicInteger RENDER_RECOVERY_COUNT = new AtomicInteger(0);
+    private static final long NATIVE_INFO_CACHE_TTL_MS = 5L * 60L * 1000L;
+    private static final int NATIVE_INFO_CACHE_MAX = 60;
+    private static final long YTDLP_UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L;
+    private static final ExecutorService YTDLP_UPDATE_EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final ConcurrentHashMap<String, CachedInfoEntry> NATIVE_INFO_CACHE = new ConcurrentHashMap<>();
     private static volatile String sharedYoutubeInitError;
     private static volatile String sharedFfmpegInitError;
     private static volatile MainActivity activeInstance;
+
+    private static final class CachedInfoEntry {
+        final long expiresAt;
+        final String json;
+
+        CachedInfoEntry(long expiresAt, String json) {
+            this.expiresAt = expiresAt;
+            this.json = json;
+        }
+    }
+
+    private static JSONObject getCachedNativeInfo(String key) {
+        if (key == null || key.isEmpty()) return null;
+        CachedInfoEntry entry = NATIVE_INFO_CACHE.get(key);
+        if (entry == null) return null;
+        if (entry.expiresAt <= System.currentTimeMillis()) {
+            NATIVE_INFO_CACHE.remove(key);
+            return null;
+        }
+        try {
+            return new JSONObject(entry.json);
+        } catch (JSONException ignored) {
+            NATIVE_INFO_CACHE.remove(key);
+            return null;
+        }
+    }
+
+    private static void putCachedNativeInfo(String key, JSONObject data) {
+        if (key == null || key.isEmpty() || data == null) return;
+        if (NATIVE_INFO_CACHE.size() >= NATIVE_INFO_CACHE_MAX) {
+            NATIVE_INFO_CACHE.clear();
+        }
+        NATIVE_INFO_CACHE.put(
+            key,
+            new CachedInfoEntry(System.currentTimeMillis() + NATIVE_INFO_CACHE_TTL_MS, data.toString())
+        );
+    }
+
+    private static void recordPendingBackgroundFetch(
+        String requestId,
+        String platform,
+        String url,
+        JSONObject data
+    ) {
+        if (platform == null || url == null || data == null) return;
+        try {
+            JSONObject wrapper = new JSONObject();
+            wrapper.put("requestId", requestId != null ? requestId : "");
+            wrapper.put("platform", platform);
+            wrapper.put("url", url.trim());
+            wrapper.put("data", data);
+            wrapper.put("completedAt", System.currentTimeMillis());
+            pendingBackgroundFetchRequestId = requestId;
+            PENDING_BACKGROUND_FETCH.set(wrapper.toString());
+        } catch (JSONException ignored) {
+        }
+    }
     private final Map<String, File> pendingBlobFiles = new ConcurrentHashMap<>();
     private final Map<String, File> compressedVideoFiles = new ConcurrentHashMap<>();
     private final ExecutorService facebookExecutor = Executors.newSingleThreadExecutor();
@@ -588,23 +658,163 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
-        public void getFacebookInfo(String url, String requestId) {
-            facebookExecutor.execute(() -> {
-                try {
-                    ensureFacebookUrl(url);
-                    ensureFacebookDownloader();
-                    VideoInfo info = YoutubeDL.getInstance().getInfo(createFacebookRequest(url));
-                    JSONObject data = new JSONObject();
-                    data.put("title", info.getTitle() != null ? info.getTitle() : "Facebook Video");
-                    data.put("thumbnail", info.getThumbnail());
-                    data.put("hdUrl", JSONObject.NULL);
-                    data.put("sdUrl", JSONObject.NULL);
-                    data.put("nativeDownload", true);
-                    sendFacebookResult(requestId, data);
-                } catch (Throwable e) {
-                    sendFacebookError(requestId, e);
+        public String getPendingBackgroundFetch() {
+            String raw = PENDING_BACKGROUND_FETCH.getAndSet(null);
+            pendingBackgroundFetchRequestId = null;
+            if (raw == null || raw.isEmpty()) return "";
+            try {
+                JSONObject obj = new JSONObject(raw);
+                long completedAt = obj.optLong("completedAt", 0L);
+                if (completedAt > 0L && System.currentTimeMillis() - completedAt > 15L * 60L * 1000L) {
+                    return "";
                 }
-            });
+                return raw;
+            } catch (JSONException ignored) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void clearPendingBackgroundFetch(String requestId) {
+            if (requestId != null && requestId.equals(pendingBackgroundFetchRequestId)) {
+                PENDING_BACKGROUND_FETCH.set(null);
+                pendingBackgroundFetchRequestId = null;
+            }
+        }
+
+        @JavascriptInterface
+        public void getTikTokInfo(String url, String requestId) {
+            Context appCtx = getApplicationContext();
+            String safeUrl = url != null ? url.trim() : "";
+            String cacheKey = "tt:" + safeUrl;
+            JSONObject cached = getCachedNativeInfo(cacheKey);
+            if (cached != null) {
+                sendTikTokResult(requestId, cached);
+                return;
+            }
+            DownloadForegroundService.runBackgroundFetchTask(
+                appCtx,
+                requestId,
+                "Fetching TikTok video…",
+                "TikTok",
+                true,
+                (task) -> {
+                    try {
+                        task.updateProgress(15, 0, 0, -1, "Connecting to TikTok…");
+                        task.checkCancelled();
+                        JSONObject data = fetchTikTokInfoNative(appCtx, safeUrl, task);
+                        task.checkCancelled();
+                        task.updateProgress(95, 0, 0, -1, "Preparing TikTok video…");
+                        putCachedNativeInfo(cacheKey, data);
+                        recordPendingBackgroundFetch(requestId, "tiktok", safeUrl, data);
+                        String videoTitle = data.optString("title", "TikTok Video");
+                        task.updateProgress(100, 0, 0, -1, "Ready to download");
+                        task.markFetchCompleted("TikTok", videoTitle);
+                        sendTikTokResult(requestId, data);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendTikTokError(requestId, new Exception("Fetch cancelled."));
+                    } catch (Throwable e) {
+                        task.markFetchFailed("TikTok", e.getMessage());
+                        sendTikTokError(requestId, e);
+                    }
+                },
+                null
+            );
+        }
+
+        @JavascriptInterface
+        public void getTwitterInfo(String url, String requestId) {
+            Context appCtx = getApplicationContext();
+            String safeUrl = url != null ? url.trim() : "";
+            String cacheKey = "tw:" + safeUrl;
+            JSONObject cached = getCachedNativeInfo(cacheKey);
+            if (cached != null) {
+                sendTwitterResult(requestId, cached);
+                return;
+            }
+            DownloadForegroundService.runBackgroundFetchTask(
+                appCtx,
+                requestId,
+                "Fetching X video…",
+                "X",
+                true,
+                (task) -> {
+                    try {
+                        task.updateProgress(15, 0, 0, -1, "Connecting to X…");
+                        task.checkCancelled();
+                        JSONObject data = fetchTwitterInfoNative(appCtx, safeUrl, task);
+                        task.checkCancelled();
+                        task.updateProgress(95, 0, 0, -1, "Preparing X qualities…");
+                        putCachedNativeInfo(cacheKey, data);
+                        recordPendingBackgroundFetch(requestId, "twitter", safeUrl, data);
+                        String videoTitle = data.optString("title", "X Video");
+                        task.updateProgress(100, 0, 0, -1, "Ready to download");
+                        task.markFetchCompleted("X", videoTitle);
+                        sendTwitterResult(requestId, data);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendTwitterError(requestId, new Exception("Fetch cancelled."));
+                    } catch (Throwable e) {
+                        task.markFetchFailed("X", e.getMessage());
+                        sendTwitterError(requestId, e);
+                    }
+                },
+                null
+            );
+        }
+
+        @JavascriptInterface
+        public void getFacebookInfo(String url, String requestId) {
+            Context appCtx = getApplicationContext();
+            String safeUrl = url != null ? url.trim() : "";
+            String cacheKey = "fb:" + safeUrl;
+            JSONObject cached = getCachedNativeInfo(cacheKey);
+            if (cached != null) {
+                sendFacebookResult(requestId, cached);
+                return;
+            }
+            DownloadForegroundService.runBackgroundFetchTask(
+                appCtx,
+                requestId,
+                "Fetching Facebook video…",
+                "Facebook",
+                true,
+                (task) -> {
+                    try {
+                        ensureFacebookUrl(safeUrl);
+                        task.updateProgress(15, 0, 0, -1, "Connecting to Facebook…");
+                        task.checkCancelled();
+                        ensureFacebookDownloader();
+                        task.updateProgress(45, 0, 0, -1, "Reading Facebook video info…");
+                        task.checkCancelled();
+                        VideoInfo info = YoutubeDL.getInstance().getInfo(createFacebookRequest(safeUrl));
+                        task.checkCancelled();
+                        task.updateProgress(92, 0, 0, -1, "Preparing download options…");
+                        JSONObject data = new JSONObject();
+                        String title = info.getTitle() != null && !info.getTitle().trim().isEmpty()
+                            ? info.getTitle().trim()
+                            : "Facebook Video";
+                        data.put("title", title);
+                        data.put("thumbnail", info.getThumbnail());
+                        data.put("hdUrl", JSONObject.NULL);
+                        data.put("sdUrl", JSONObject.NULL);
+                        data.put("nativeDownload", true);
+                        putCachedNativeInfo(cacheKey, data);
+                        recordPendingBackgroundFetch(requestId, "facebook", safeUrl, data);
+                        task.updateProgress(100, 0, 0, -1, "Ready to download");
+                        task.markFetchCompleted("Facebook", title);
+                        sendFacebookResult(requestId, data);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendFacebookError(requestId, new Exception("Fetch cancelled."));
+                    } catch (Throwable e) {
+                        task.markFetchFailed("Facebook", e.getMessage());
+                        sendFacebookError(requestId, e);
+                    }
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -646,65 +856,98 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void getYouTubeInfo(String url, String requestId) {
-            youtubeExecutor.execute(() -> {
-                try {
-                    ensureYouTubeUrl(url);
-                    ensureYouTubeDownloader();
-                    VideoInfo info = YoutubeDL.getInstance().getInfo(createYouTubeRequest(url));
-                    String audioId = null;
-                    for (com.yausername.youtubedl_android.mapper.VideoFormat format : info.getFormats()) {
-                        String audioCodec = format.getAcodec();
-                        String formatId = format.getFormatId();
-                        if ("none".equals(format.getVcodec()) &&
-                            audioCodec != null && audioCodec.startsWith("mp4a") &&
-                            "m4a".equals(format.getExt()) &&
-                            formatId != null && formatId.matches("\\d+")) {
-                            audioId = formatId;
+            Context appCtx = getApplicationContext();
+            String safeUrl = url != null ? url.trim() : "";
+            String cacheKey = "yt:" + safeUrl;
+            JSONObject cached = getCachedNativeInfo(cacheKey);
+            if (cached != null) {
+                sendYouTubeResult(requestId, cached);
+                return;
+            }
+            DownloadForegroundService.runBackgroundFetchTask(
+                appCtx,
+                requestId,
+                "Fetching YouTube video…",
+                "YouTube",
+                true,
+                (task) -> {
+                    try {
+                        ensureYouTubeUrl(safeUrl);
+                        task.updateProgress(15, 0, 0, -1, "Connecting to YouTube…");
+                        task.checkCancelled();
+                        ensureYouTubeDownloader();
+                        task.updateProgress(45, 0, 0, -1, "Reading YouTube video formats…");
+                        task.checkCancelled();
+                        VideoInfo info = YoutubeDL.getInstance().getInfo(createYouTubeRequest(safeUrl));
+                        task.checkCancelled();
+                        task.updateProgress(90, 0, 0, -1, "Preparing download qualities…");
+                        String audioId = null;
+                        for (com.yausername.youtubedl_android.mapper.VideoFormat format : info.getFormats()) {
+                            String audioCodec = format.getAcodec();
+                            String formatId = format.getFormatId();
+                            if ("none".equals(format.getVcodec()) &&
+                                audioCodec != null && audioCodec.startsWith("mp4a") &&
+                                "m4a".equals(format.getExt()) &&
+                                formatId != null && formatId.matches("\\d+")) {
+                                audioId = formatId;
+                            }
                         }
-                    }
 
-                    TreeMap<Integer, String> availableFormats = new TreeMap<>((a, b) -> b.compareTo(a));
-                    for (com.yausername.youtubedl_android.mapper.VideoFormat format : info.getFormats()) {
-                        String videoCodec = format.getVcodec();
-                        String audioCodec = format.getAcodec();
-                        String formatId = format.getFormatId();
-                        String ext = format.getExt();
-                        if (videoCodec == null || "none".equals(videoCodec) || audioCodec == null ||
-                            (!"mp4".equals(ext) && !"webm".equals(ext)) ||
-                            formatId == null || !formatId.matches("\\d+") ||
-                            format.getHeight() <= 0) {
-                            continue;
+                        TreeMap<Integer, String> availableFormats = new TreeMap<>((a, b) -> b.compareTo(a));
+                        for (com.yausername.youtubedl_android.mapper.VideoFormat format : info.getFormats()) {
+                            String videoCodec = format.getVcodec();
+                            String audioCodec = format.getAcodec();
+                            String formatId = format.getFormatId();
+                            String ext = format.getExt();
+                            if (videoCodec == null || "none".equals(videoCodec) || audioCodec == null ||
+                                (!"mp4".equals(ext) && !"webm".equals(ext)) ||
+                                formatId == null || !formatId.matches("\\d+") ||
+                                format.getHeight() <= 0) {
+                                continue;
+                            }
+
+                            boolean needsMux = "none".equals(audioCodec);
+                            if (needsMux && audioId == null) continue;
+                            availableFormats.put(
+                                format.getHeight(),
+                                needsMux ? formatId + "+" + audioId : formatId
+                            );
                         }
 
-                        boolean needsMux = "none".equals(audioCodec);
-                        if (needsMux && audioId == null) continue;
-                        availableFormats.put(
-                            format.getHeight(),
-                            needsMux ? formatId + "+" + audioId : formatId
-                        );
-                    }
+                        JSONArray formats = new JSONArray();
+                        for (Map.Entry<Integer, String> entry : availableFormats.entrySet()) {
+                            JSONObject format = new JSONObject();
+                            format.put("formatStr", entry.getValue());
+                            format.put("qualityLabel", entry.getKey() + "p");
+                            format.put("needsMux", entry.getValue().contains("+"));
+                            formats.put(format);
+                        }
 
-                    JSONArray formats = new JSONArray();
-                    for (Map.Entry<Integer, String> entry : availableFormats.entrySet()) {
-                        JSONObject format = new JSONObject();
-                        format.put("formatStr", entry.getValue());
-                        format.put("qualityLabel", entry.getKey() + "p");
-                        format.put("needsMux", entry.getValue().contains("+"));
-                        formats.put(format);
+                        String title = info.getTitle() != null && !info.getTitle().trim().isEmpty()
+                            ? info.getTitle().trim()
+                            : "YouTube Video";
+                        JSONObject data = new JSONObject();
+                        data.put("id", info.getId() != null ? info.getId() : "");
+                        data.put("title", title);
+                        data.put("thumbnail", info.getThumbnail() != null ? info.getThumbnail() : JSONObject.NULL);
+                        data.put("channelName", info.getUploader() != null ? info.getUploader() : "Unknown");
+                        data.put("duration", info.getDuration());
+                        data.put("formats", formats);
+                        putCachedNativeInfo(cacheKey, data);
+                        recordPendingBackgroundFetch(requestId, "youtube", safeUrl, data);
+                        task.updateProgress(100, 0, 0, -1, "Ready to download");
+                        task.markFetchCompleted("YouTube", title);
+                        sendYouTubeResult(requestId, data);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendYouTubeError(requestId, new Exception("Fetch cancelled."));
+                    } catch (Throwable e) {
+                        task.markFetchFailed("YouTube", e.getMessage());
+                        sendYouTubeError(requestId, e);
                     }
-
-                    JSONObject data = new JSONObject();
-                    data.put("id", info.getId() != null ? info.getId() : "");
-                    data.put("title", info.getTitle() != null ? info.getTitle() : "YouTube Video");
-                    data.put("thumbnail", info.getThumbnail() != null ? info.getThumbnail() : JSONObject.NULL);
-                    data.put("channelName", info.getUploader() != null ? info.getUploader() : "Unknown");
-                    data.put("duration", info.getDuration());
-                    data.put("formats", formats);
-                    sendYouTubeResult(requestId, data);
-                } catch (Throwable e) {
-                    sendYouTubeError(requestId, e);
-                }
-            });
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -751,15 +994,51 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void getSocialVideoInfo(String platform, String url, String requestId) {
-            socialExecutor.execute(() -> {
-                try {
-                    String normalizedPlatform = normalizeSocialPlatform(platform);
-                    JSONObject data = fetchSocialVideoInfoNative(normalizedPlatform, url);
-                    sendSocialVideoResult(requestId, data);
-                } catch (Throwable e) {
-                    sendSocialVideoError(requestId, e);
-                }
-            });
+            Context appCtx = getApplicationContext();
+            String normalizedPlatform;
+            try {
+                normalizedPlatform = normalizeSocialPlatform(platform);
+            } catch (Throwable e) {
+                sendSocialVideoError(requestId, e);
+                return;
+            }
+            String providerName = "instagram".equals(normalizedPlatform) ? "Instagram" : "Pinterest";
+            String safeUrl = url != null ? url.trim() : "";
+            String cacheKey = normalizedPlatform + ":" + safeUrl;
+            JSONObject cached = getCachedNativeInfo(cacheKey);
+            if (cached != null) {
+                sendSocialVideoResult(requestId, cached);
+                return;
+            }
+            DownloadForegroundService.runBackgroundFetchTask(
+                appCtx,
+                requestId,
+                "Fetching " + providerName + " media…",
+                providerName,
+                true,
+                (task) -> {
+                    try {
+                        task.updateProgress(15, 0, 0, -1, "Resolving " + providerName + " link…");
+                        task.checkCancelled();
+                        JSONObject data = fetchSocialVideoInfoNative(normalizedPlatform, safeUrl);
+                        task.checkCancelled();
+                        task.updateProgress(95, 0, 0, -1, "Preparing " + providerName + " media…");
+                        putCachedNativeInfo(cacheKey, data);
+                        recordPendingBackgroundFetch(requestId, normalizedPlatform, safeUrl, data);
+                        String mediaTitle = data.optString("title", providerName + " Media");
+                        task.updateProgress(100, 0, 0, -1, "Ready to download");
+                        task.markFetchCompleted(providerName, mediaTitle);
+                        sendSocialVideoResult(requestId, data);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendSocialVideoError(requestId, new Exception("Fetch cancelled."));
+                    } catch (Throwable e) {
+                        task.markFetchFailed(providerName, e.getMessage());
+                        sendSocialVideoError(requestId, e);
+                    }
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -1473,7 +1752,8 @@ public class MainActivity extends BridgeActivity {
         return new YoutubeDLRequest(url)
             .addOption("--no-playlist")
             .addOption("--no-warnings")
-            .addOption("--socket-timeout", "25")
+            .addOption("--no-check-certificates")
+            .addOption("--socket-timeout", "12")
             .addOption("--add-header", "Referer:https://www.facebook.com/");
     }
 
@@ -1481,7 +1761,9 @@ public class MainActivity extends BridgeActivity {
         return new YoutubeDLRequest(url)
             .addOption("--no-playlist")
             .addOption("--no-warnings")
-            .addOption("--socket-timeout", "25");
+            .addOption("--no-check-certificates")
+            .addOption("--extractor-args", "youtube:skip=translated_subs")
+            .addOption("--socket-timeout", "12");
     }
 
     private File downloadYouTubeFile(String url, String formatStr, String requestId) throws Exception {
@@ -1581,20 +1863,32 @@ public class MainActivity extends BridgeActivity {
         if (sharedYoutubeInitError != null) {
             throw new IllegalStateException("The on-device downloader could not start: " + sharedYoutubeInitError);
         }
+        // Keep yt-dlp fresh in the background (at most once every 24h) without ever blocking the user's fetch
+        scheduleBackgroundYtDlpUpdateIfDue(getApplicationContext());
+    }
+
+    private void scheduleBackgroundYtDlpUpdateIfDue(Context appContext) {
         synchronized (ytDlpUpdateLock) {
-            if (!youtubeUpdateChecked) {
-                youtubeUpdateChecked = true;
-                try {
-                    YoutubeDL.UpdateStatus status = YoutubeDL.getInstance().updateYoutubeDL(
-                        getApplicationContext(),
-                        YoutubeDL.UpdateChannel._NIGHTLY
-                    );
-                    Log.i(TAG, "yt-dlp update check completed: " + status);
-                } catch (Throwable e) {
-                    Log.w(TAG, "Could not update yt-dlp; continuing with the bundled version.", e);
-                }
-            }
+            if (youtubeUpdateChecked) return;
+            youtubeUpdateChecked = true;
         }
+        YTDLP_UPDATE_EXECUTOR.execute(() -> {
+            try {
+                android.content.SharedPreferences prefs =
+                    appContext.getSharedPreferences("hutaotik_ytdlp", MODE_PRIVATE);
+                long now = System.currentTimeMillis();
+                long lastChecked = prefs.getLong("last_update_check_ms", 0L);
+                if (now - lastChecked < YTDLP_UPDATE_INTERVAL_MS) return;
+                prefs.edit().putLong("last_update_check_ms", now).apply();
+                YoutubeDL.UpdateStatus status = YoutubeDL.getInstance().updateYoutubeDL(
+                    appContext,
+                    YoutubeDL.UpdateChannel._NIGHTLY
+                );
+                Log.i(TAG, "Background yt-dlp update check completed: " + status);
+            } catch (Throwable e) {
+                Log.w(TAG, "Background yt-dlp update skipped safely.", e);
+            }
+        });
     }
 
     private static final class SocialDownloadResult {
@@ -1623,7 +1917,7 @@ public class MainActivity extends BridgeActivity {
             .addOption("--playlist-items", "1")
             .addOption("--no-warnings")
             .addOption("--no-check-certificates")
-            .addOption("--socket-timeout", "25");
+            .addOption("--socket-timeout", "12");
         if ("pinterest".equals(platform)) {
             request.addOption("--add-header", "Referer:https://www.pinterest.com/");
         }
@@ -2295,6 +2589,622 @@ public class MainActivity extends BridgeActivity {
         String script = "window.onNativeYouTubeResult && window.onNativeYouTubeResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         evalJsSafely(script);
+    }
+
+    private void sendTikTokError(String requestId, Throwable error) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Could not fetch TikTok video.");
+        } catch (JSONException e) {
+            return;
+        }
+        sendTikTokResult(requestId, result);
+    }
+
+    private void sendTikTokResult(String requestId, JSONObject result) {
+        String script = "window.onNativeTikTokResult && window.onNativeTikTokResult(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
+        evalJsSafely(script);
+    }
+
+    private void sendTwitterError(String requestId, Throwable error) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Could not fetch X video or GIF.");
+        } catch (JSONException e) {
+            return;
+        }
+        sendTwitterResult(requestId, result);
+    }
+
+    private void sendTwitterResult(String requestId, JSONObject result) {
+        String script = "window.onNativeTwitterResult && window.onNativeTwitterResult(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
+        evalJsSafely(script);
+    }
+
+    private JSONObject fetchTikTokInfoNative(
+        Context appContext,
+        String targetUrl,
+        DownloadForegroundService.TaskContext task
+    ) throws Exception {
+        if (targetUrl == null || targetUrl.isEmpty()) {
+            throw new IllegalArgumentException("Enter a valid TikTok URL.");
+        }
+        Uri parsedUri = Uri.parse(targetUrl);
+        String scheme = parsedUri.getScheme();
+        String host = parsedUri.getHost() != null ? parsedUri.getHost().toLowerCase(Locale.ROOT) : "";
+        if ((!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) ||
+            (!host.equals("tiktok.com") && !host.endsWith(".tiktok.com"))) {
+            throw new IllegalArgumentException("Invalid TikTok URL. Please paste a valid TikTok link.");
+        }
+
+        String apiBase = HutaoNotificationHelper.getApiBaseUrl(appContext);
+        task.updateProgress(30, 0, 0, -1, "Fetching TikTok HD streams…");
+
+        Exception lastError = null;
+        ExecutorService racePool = Executors.newFixedThreadPool(2);
+        try {
+            CompletionService<JSONObject> completion = new ExecutorCompletionService<>(racePool);
+            Future<JSONObject> tikwmFuture = completion.submit(() -> fetchTikTokFromTikwmJava(targetUrl));
+            Future<JSONObject> apiFuture = completion.submit(() -> fetchTikTokFromApiJava(apiBase, targetUrl));
+
+            for (int i = 0; i < 2; i++) {
+                task.checkCancelled();
+                try {
+                    JSONObject result = completion.take().get();
+                    if (isValidTikTokInfoJson(result)) {
+                        ensureTikTokInfoId(result, targetUrl);
+                        tikwmFuture.cancel(true);
+                        apiFuture.cancel(true);
+                        return result;
+                    }
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    Log.w(TAG, "TikTok Tier-1 provider failed: " + cause.getMessage());
+                    lastError = cause instanceof Exception ? (Exception) cause : new Exception(cause.getMessage());
+                }
+            }
+        } finally {
+            racePool.shutdownNow();
+        }
+
+        // Tier 2: On-device bundled yt-dlp fallback using the user's own IP (no datacenter blocks)
+        task.checkCancelled();
+        try {
+            task.updateProgress(68, 0, 0, -1, "Trying on-device TikTok extractor…");
+            JSONObject ytDlpResult = fetchTikTokWithYtDlpNative(targetUrl);
+            if (isValidTikTokInfoJson(ytDlpResult)) {
+                ensureTikTokInfoId(ytDlpResult, targetUrl);
+                return ytDlpResult;
+            }
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            throw cancelled;
+        } catch (Throwable e) {
+            Log.w(TAG, "TikTok on-device yt-dlp fallback failed: " + e.getMessage());
+            if (lastError == null) {
+                lastError = e instanceof Exception ? (Exception) e : new Exception(e.getMessage());
+            }
+        }
+
+        if (lastError != null) throw lastError;
+        throw new IllegalStateException("Could not fetch this TikTok video. Please check the link and try again.");
+    }
+
+    private static boolean isValidTikTokInfoJson(JSONObject obj) {
+        if (obj == null) return false;
+        JSONArray photos = obj.optJSONArray("photos");
+        if (photos != null && photos.length() > 0) return true;
+        JSONObject dl = obj.optJSONObject("downloadUrls");
+        if (dl != null) {
+            if (nonEmptyOrNull(dl.optString("hd", "")) != null ||
+                nonEmptyOrNull(dl.optString("normal", "")) != null ||
+                nonEmptyOrNull(dl.optString("low", "")) != null ||
+                nonEmptyOrNull(dl.optString("audio", "")) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void ensureTikTokInfoId(JSONObject obj, String fallbackUrl) throws JSONException {
+        String existing = nonEmptyOrNull(obj.optString("id", ""));
+        if (existing != null && !"null".equalsIgnoreCase(existing)) return;
+        Matcher m = Pattern.compile("/(?:video|photo)/(\\d+)").matcher(fallbackUrl != null ? fallbackUrl : "");
+        if (m.find()) {
+            obj.put("id", m.group(1));
+        } else {
+            obj.put("id", "tt-" + Math.abs((fallbackUrl != null ? fallbackUrl : "").hashCode()));
+        }
+    }
+
+    private static String normalizeTikwmMediaUrl(String raw) {
+        String clean = nonEmptyOrNull(raw);
+        if (clean == null || "null".equalsIgnoreCase(clean)) return null;
+        if (clean.startsWith("//")) return "https:" + clean;
+        if (clean.startsWith("/")) return "https://www.tikwm.com" + clean;
+        return clean;
+    }
+
+    private JSONObject fetchTikTokFromTikwmJava(String targetUrl) throws Exception {
+        String[] endpoints = { "https://www.tikwm.com/api/", "https://tikwm.com/api/" };
+        Exception lastErr = null;
+        for (int attempt = 0; attempt < endpoints.length; attempt++) {
+            String endpoint = endpoints[attempt];
+            HttpURLConnection conn = null;
+            try {
+                String formBody = "url=" + URLEncoder.encode(targetUrl, "UTF-8") + "&hd=1";
+                byte[] payload = formBody.getBytes(StandardCharsets.UTF_8);
+                String currentUrl = endpoint;
+                int code = -1;
+
+                for (int redirect = 0; redirect < 4; redirect++) {
+                    URL parsed = new URL(currentUrl);
+                    String origin = parsed.getProtocol() + "://" + parsed.getHost();
+                    conn = (HttpURLConnection) parsed.openConnection();
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setRequestMethod("POST");
+                    conn.setDoOutput(true);
+                    conn.setConnectTimeout(10_000);
+                    conn.setReadTimeout(28_000);
+                    conn.setFixedLengthStreamingMode(payload.length);
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+                    conn.setRequestProperty("Accept", "application/json, text/plain, */*");
+                    conn.setRequestProperty("Origin", origin);
+                    conn.setRequestProperty("Referer", origin + "/");
+                    conn.setRequestProperty(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    );
+                    try (OutputStream out = conn.getOutputStream()) {
+                        out.write(payload);
+                    }
+                    code = conn.getResponseCode();
+                    if (code == HttpURLConnection.HTTP_MOVED_PERM ||
+                        code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                        code == 307 || code == 308) {
+                        String location = conn.getHeaderField("Location");
+                        conn.disconnect();
+                        conn = null;
+                        if (location == null || location.trim().isEmpty()) {
+                            break;
+                        }
+                        currentUrl = new URL(parsed, location).toString();
+                        continue;
+                    }
+                    break;
+                }
+
+                if (conn == null || code < 200 || code >= 300) {
+                    lastErr = new IllegalStateException("TikWM returned HTTP " + code);
+                    continue;
+                }
+                String raw = readHttpBody(conn.getInputStream());
+                JSONObject json = new JSONObject(raw);
+                if (json.optInt("code", -1) != 0) {
+                    String msg = json.optString("msg", "Could not fetch TikTok video.");
+                    lastErr = new IllegalStateException(msg);
+                    if (attempt == 0 && msg.toLowerCase(Locale.ROOT).contains("limit")) {
+                        try {
+                            Thread.sleep(950);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw ie;
+                        }
+                    }
+                    continue;
+                }
+                JSONObject d = json.optJSONObject("data");
+                if (d == null) continue;
+                return normalizeTikwmDataToJson(d, targetUrl);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw ie;
+            } catch (Exception e) {
+                lastErr = e;
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }
+        if (lastErr != null) throw lastErr;
+        throw new IllegalStateException("TikWM did not return video data.");
+    }
+
+    private JSONObject normalizeTikwmDataToJson(JSONObject d, String fallbackUrl) throws JSONException {
+        JSONObject author = d.optJSONObject("author");
+        JSONObject musicInfo = d.optJSONObject("music_info");
+        String authorUsername = author != null && !author.optString("unique_id", "").isEmpty()
+            ? author.optString("unique_id")
+            : "unknown";
+        String authorName = author != null && !author.optString("nickname", "").isEmpty()
+            ? author.optString("nickname")
+            : authorUsername;
+
+        JSONArray images = d.optJSONArray("images");
+        JSONArray photos = new JSONArray();
+        if (images != null) {
+            for (int i = 0; i < images.length(); i++) {
+                String img = normalizeTikwmMediaUrl(images.optString(i, ""));
+                if (img != null) photos.put(img);
+            }
+        }
+
+        String play = normalizeTikwmMediaUrl(d.optString("play", ""));
+        String hdplay = normalizeTikwmMediaUrl(d.optString("hdplay", ""));
+        String wmplay = normalizeTikwmMediaUrl(d.optString("wmplay", ""));
+        String music = normalizeTikwmMediaUrl(d.optString("music", ""));
+        String musicInfoPlay = musicInfo != null ? normalizeTikwmMediaUrl(musicInfo.optString("play", "")) : null;
+
+        JSONObject downloadUrls = new JSONObject();
+        downloadUrls.put("hd", hdplay != null ? hdplay : (play != null ? play : JSONObject.NULL));
+        downloadUrls.put("normal", play != null ? play : JSONObject.NULL);
+        downloadUrls.put("low", wmplay != null ? wmplay : (play != null ? play : JSONObject.NULL));
+        downloadUrls.put("audio", music != null ? music : (musicInfoPlay != null ? musicInfoPlay : JSONObject.NULL));
+
+        JSONObject musicObj = new JSONObject();
+        musicObj.put("title", musicInfo != null && !musicInfo.optString("title", "").isEmpty() ? musicInfo.optString("title") : "Unknown");
+        musicObj.put("author", musicInfo != null && !musicInfo.optString("author", "").isEmpty() ? musicInfo.optString("author") : "Unknown");
+        musicObj.put("url", musicInfoPlay != null ? musicInfoPlay : (music != null ? music : JSONObject.NULL));
+
+        Object rawId = d.opt("id");
+        if (rawId == null || rawId == JSONObject.NULL) {
+            rawId = d.opt("aweme_id");
+        }
+        String resolvedId = (rawId != null && rawId != JSONObject.NULL) ? String.valueOf(rawId).trim() : "";
+
+        JSONObject out = new JSONObject();
+        out.put("id", resolvedId);
+        out.put("title", !d.optString("title", "").isEmpty() ? d.optString("title") : "TikTok video");
+        out.put("author", authorName);
+        out.put("authorUsername", authorUsername);
+        String avatar = author != null ? normalizeTikwmMediaUrl(author.optString("avatar", "")) : null;
+        out.put("authorAvatar", avatar != null ? avatar : JSONObject.NULL);
+        String cover = normalizeTikwmMediaUrl(d.optString("cover", ""));
+        if (cover == null) cover = normalizeTikwmMediaUrl(d.optString("origin_cover", ""));
+        out.put("thumbnail", cover != null ? cover : JSONObject.NULL);
+        int duration = d.optInt("duration", -1);
+        out.put("duration", duration >= 0 ? duration : JSONObject.NULL);
+        out.put("downloadUrls", downloadUrls);
+        out.put("isPhoto", photos.length() > 0);
+        out.put("photos", photos);
+        out.put("music", musicObj);
+        ensureTikTokInfoId(out, fallbackUrl);
+        return out;
+    }
+
+    private JSONObject fetchTikTokWithYtDlpNative(String targetUrl) throws Exception {
+        ensureYouTubeDownloader();
+        YoutubeDLRequest request = new YoutubeDLRequest(targetUrl)
+            .addOption("--no-playlist")
+            .addOption("--no-warnings")
+            .addOption("--no-check-certificates")
+            .addOption("--socket-timeout", "15");
+        VideoInfo info = YoutubeDL.getInstance().getInfo(request);
+        if (info == null) {
+            throw new IllegalStateException("On-device TikTok extractor returned empty metadata.");
+        }
+
+        String hdUrl = null;
+        String normalUrl = null;
+        String lowUrl = null;
+        String audioUrl = null;
+        int bestHdHeight = -1;
+        int bestNormalHeight = -1;
+        int lowestHeight = Integer.MAX_VALUE;
+
+        java.util.ArrayList<com.yausername.youtubedl_android.mapper.VideoFormat> formats = info.getFormats();
+        if (formats != null) {
+            for (com.yausername.youtubedl_android.mapper.VideoFormat fmt : formats) {
+                if (fmt == null) continue;
+                String fUrl = nonEmptyOrNull(fmt.getUrl());
+                if (fUrl == null || (!fUrl.startsWith("https://") && !fUrl.startsWith("http://"))) continue;
+                String vcodec = fmt.getVcodec();
+                String acodec = fmt.getAcodec();
+                boolean hasVideo = vcodec != null && !"none".equalsIgnoreCase(vcodec);
+                boolean hasAudio = acodec != null && !"none".equalsIgnoreCase(acodec);
+                int height = fmt.getHeight();
+
+                if (!hasVideo && hasAudio && audioUrl == null) {
+                    audioUrl = fUrl;
+                    continue;
+                }
+                if (hasVideo) {
+                    if (height > bestHdHeight) {
+                        bestHdHeight = height;
+                        hdUrl = fUrl;
+                    }
+                    if (hasAudio && height >= bestNormalHeight) {
+                        bestNormalHeight = height;
+                        normalUrl = fUrl;
+                    }
+                    if (hasAudio && height > 0 && height < lowestHeight) {
+                        lowestHeight = height;
+                        lowUrl = fUrl;
+                    }
+                }
+            }
+        }
+
+        String directFallback = nonEmptyOrNull(info.getUrl());
+        if (hdUrl == null) hdUrl = directFallback;
+        if (normalUrl == null) normalUrl = hdUrl;
+        if (lowUrl == null) lowUrl = normalUrl;
+        if (hdUrl == null && audioUrl == null) {
+            throw new IllegalStateException("No downloadable TikTok stream was found.");
+        }
+
+        String authorName = nonEmptyOrNull(info.getUploader());
+        if (authorName == null) authorName = nonEmptyOrNull(info.getUploaderId());
+        if (authorName == null) authorName = "Unknown";
+        String authorUsername = nonEmptyOrNull(info.getUploaderId());
+        if (authorUsername == null) authorUsername = "unknown";
+
+        JSONObject downloadUrls = new JSONObject();
+        downloadUrls.put("hd", hdUrl != null ? hdUrl : JSONObject.NULL);
+        downloadUrls.put("normal", normalUrl != null ? normalUrl : JSONObject.NULL);
+        downloadUrls.put("low", lowUrl != null ? lowUrl : JSONObject.NULL);
+        downloadUrls.put("audio", audioUrl != null ? audioUrl : JSONObject.NULL);
+
+        JSONObject musicObj = new JSONObject();
+        musicObj.put("title", "Original Sound");
+        musicObj.put("author", authorName);
+        musicObj.put("url", audioUrl != null ? audioUrl : JSONObject.NULL);
+
+        String title = nonEmptyOrNull(info.getTitle());
+        if (title == null) title = nonEmptyOrNull(info.getDescription());
+        if (title == null) title = "TikTok video";
+
+        JSONObject out = new JSONObject();
+        out.put("id", nonEmptyOrNull(info.getId()) != null ? info.getId().trim() : "");
+        out.put("title", title);
+        out.put("author", authorName);
+        out.put("authorUsername", authorUsername);
+        out.put("authorAvatar", JSONObject.NULL);
+        String thumb = nonEmptyOrNull(info.getThumbnail());
+        out.put("thumbnail", thumb != null ? thumb : JSONObject.NULL);
+        int duration = info.getDuration();
+        out.put("duration", duration > 0 ? duration : JSONObject.NULL);
+        out.put("downloadUrls", downloadUrls);
+        out.put("isPhoto", false);
+        out.put("photos", new JSONArray());
+        out.put("music", musicObj);
+        ensureTikTokInfoId(out, targetUrl);
+        return out;
+    }
+
+    private JSONObject fetchTikTokFromApiJava(String apiBase, String targetUrl) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            JSONObject reqBody = new JSONObject();
+            reqBody.put("url", targetUrl);
+            byte[] payload = reqBody.toString().getBytes(StandardCharsets.UTF_8);
+            conn = (HttpURLConnection) new URL(apiBase + "/api/tiktok/fetch").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(30_000);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Accept", "application/json");
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(payload);
+            }
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                String errMsg = readHttpErrorMessage(conn);
+                throw new IllegalStateException(errMsg != null ? errMsg : ("TikTok fetch failed (HTTP " + code + ")."));
+            }
+            return new JSONObject(readHttpBody(conn.getInputStream()));
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private JSONObject fetchTwitterInfoNative(
+        Context appContext,
+        String targetUrl,
+        DownloadForegroundService.TaskContext task
+    ) throws Exception {
+        if (targetUrl == null || targetUrl.isEmpty()) {
+            throw new IllegalArgumentException("Enter a valid X / Twitter URL.");
+        }
+        String apiBase = HutaoNotificationHelper.getApiBaseUrl(appContext);
+        task.updateProgress(35, 0, 0, -1, "Fetching X video metadata…");
+
+        ExecutorService racePool = Executors.newFixedThreadPool(2);
+        try {
+            CompletionService<JSONObject> completion = new ExecutorCompletionService<>(racePool);
+            Future<JSONObject> fxFuture = completion.submit(() -> fetchTwitterFromFxJava(targetUrl));
+            Future<JSONObject> apiFuture = completion.submit(() -> fetchTwitterFromApiJava(apiBase, targetUrl));
+
+            Exception lastError = null;
+            for (int i = 0; i < 2; i++) {
+                task.checkCancelled();
+                try {
+                    JSONObject result = completion.take().get();
+                    if (result != null && result.optJSONArray("formats") != null &&
+                        result.optJSONArray("formats").length() > 0) {
+                        fxFuture.cancel(true);
+                        apiFuture.cancel(true);
+                        return result;
+                    }
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    lastError = cause instanceof Exception ? (Exception) cause : new Exception(cause.getMessage());
+                }
+            }
+            if (lastError != null) throw lastError;
+            throw new IllegalStateException("No downloadable video or GIF was found in this X post.");
+        } finally {
+            racePool.shutdownNow();
+        }
+    }
+
+    private JSONObject fetchTwitterFromFxJava(String targetUrl) throws Exception {
+        Matcher idMatcher = Pattern.compile("/status(?:es)?/(\\d+)", Pattern.CASE_INSENSITIVE).matcher(targetUrl);
+        if (!idMatcher.find()) {
+            throw new IllegalArgumentException("The X post URL does not contain a valid post ID.");
+        }
+        String statusId = idMatcher.group(1);
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL("https://api.fxtwitter.com/i/status/" + statusId).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(6_000);
+            conn.setReadTimeout(9_000);
+            conn.setRequestProperty("Accept", "application/json");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("X video provider returned HTTP " + code);
+            }
+            JSONObject root = new JSONObject(readHttpBody(conn.getInputStream()));
+            if (root.optInt("code", 0) != 200) {
+                throw new IllegalStateException("Could not find this X post.");
+            }
+            JSONObject tweet = root.optJSONObject("tweet");
+            if (tweet == null) throw new IllegalStateException("Could not find this X post.");
+            JSONObject media = tweet.optJSONObject("media");
+            JSONArray rawMedia = media != null ? media.optJSONArray("videos") : null;
+            if (rawMedia == null || rawMedia.length() == 0) {
+                JSONArray all = media != null ? media.optJSONArray("all") : null;
+                rawMedia = new JSONArray();
+                if (all != null) {
+                    for (int i = 0; i < all.length(); i++) {
+                        JSONObject item = all.optJSONObject(i);
+                        if (item == null) continue;
+                        String type = item.optString("type", "").toLowerCase(Locale.ROOT);
+                        if ("video".equals(type) || "gif".equals(type)) {
+                            rawMedia.put(item);
+                        }
+                    }
+                }
+            }
+            if (rawMedia.length() == 0) {
+                throw new IllegalStateException("No downloadable video or GIF was found in this X post.");
+            }
+
+            JSONObject primaryVideo = rawMedia.getJSONObject(0);
+            JSONArray rawFormats = primaryVideo.optJSONArray("formats");
+            TreeMap<Integer, String> bestByHeight = new TreeMap<>((a, b) -> b.compareTo(a));
+            Map<Integer, Integer> bestBitrateByHeight = new LinkedHashMap<>();
+            Pattern dimPattern = Pattern.compile("/(\\d{2,4})x(\\d{2,4})/");
+
+            if (rawFormats != null) {
+                for (int i = 0; i < rawFormats.length(); i++) {
+                    JSONObject fmt = rawFormats.optJSONObject(i);
+                    if (fmt == null) continue;
+                    String fUrl = fmt.optString("url", "");
+                    if (!fUrl.startsWith("https://video.twimg.com/")) continue;
+                    String container = fmt.optString("container", "");
+                    if (!"mp4".equalsIgnoreCase(container) && !fUrl.toLowerCase(Locale.ROOT).contains(".mp4")) continue;
+                    Matcher dm = dimPattern.matcher(fUrl);
+                    int height = dm.find()
+                        ? Integer.parseInt(dm.group(2))
+                        : (primaryVideo.optInt("height", 0) > 0 ? primaryVideo.optInt("height") : 480);
+                    int bitrate = fmt.optInt("bitrate", 0);
+                    boolean isH264 = "h264".equalsIgnoreCase(fmt.optString("codec", ""));
+                    int score = bitrate + (isH264 ? 1_000_000_000 : 0);
+                    Integer existingScore = bestBitrateByHeight.get(height);
+                    if (existingScore == null || score > existingScore) {
+                        bestBitrateByHeight.put(height, score);
+                        bestByHeight.put(height, fUrl);
+                    }
+                }
+            }
+
+            String directVideoUrl = primaryVideo.optString("url", "");
+            if (bestByHeight.isEmpty() && directVideoUrl.startsWith("https://video.twimg.com/") &&
+                directVideoUrl.toLowerCase(Locale.ROOT).contains(".mp4")) {
+                int h = primaryVideo.optInt("height", 0) > 0 ? primaryVideo.optInt("height") : 480;
+                bestByHeight.put(h, directVideoUrl);
+            }
+            if (bestByHeight.isEmpty()) {
+                throw new IllegalStateException("No downloadable video or GIF was found in this X post.");
+            }
+
+            boolean isGif = "gif".equalsIgnoreCase(primaryVideo.optString("type", "")) ||
+                directVideoUrl.contains("/tweet_video/");
+            JSONArray formatsOut = new JSONArray();
+            for (Map.Entry<Integer, String> entry : bestByHeight.entrySet()) {
+                if (entry.getValue().contains("/tweet_video/")) isGif = true;
+                JSONObject fmtObj = new JSONObject();
+                fmtObj.put("height", entry.getKey());
+                fmtObj.put("qualityLabel", entry.getKey() + "p");
+                fmtObj.put("downloadUrl", entry.getValue());
+                formatsOut.put(fmtObj);
+            }
+
+            JSONObject author = tweet.optJSONObject("author");
+            String channelName = author != null && !author.optString("name", "").isEmpty()
+                ? author.optString("name")
+                : (author != null && !author.optString("screen_name", "").isEmpty()
+                    ? author.optString("screen_name")
+                    : "X Creator");
+            String text = tweet.optString("text", "").trim();
+            String thumb = nonEmptyOrNull(primaryVideo.optString("thumbnail_url", ""));
+
+            JSONObject out = new JSONObject();
+            out.put("id", !tweet.optString("id", "").isEmpty() ? tweet.optString("id") : statusId);
+            out.put("title", !text.isEmpty() ? text : (isGif ? "X GIF" : "X Video"));
+            out.put("thumbnail", thumb != null ? thumb : JSONObject.NULL);
+            out.put("channelName", channelName);
+            out.put("duration", (int) Math.round(primaryVideo.optDouble("duration", 0)));
+            out.put("isGif", isGif);
+            out.put("formats", formatsOut);
+            return out;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private JSONObject fetchTwitterFromApiJava(String apiBase, String targetUrl) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            String endpoint = apiBase + "/api/twitter/info?url=" + URLEncoder.encode(targetUrl, "UTF-8");
+            conn = (HttpURLConnection) new URL(endpoint).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(25_000);
+            conn.setRequestProperty("Accept", "application/json");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                String errMsg = readHttpErrorMessage(conn);
+                throw new IllegalStateException(errMsg != null ? errMsg : ("X fetch failed (HTTP " + code + ")."));
+            }
+            return new JSONObject(readHttpBody(conn.getInputStream()));
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static String readHttpBody(InputStream in) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String readHttpErrorMessage(HttpURLConnection conn) {
+        try (InputStream err = conn.getErrorStream()) {
+            if (err == null) return null;
+            String raw = readHttpBody(err).trim();
+            if (raw.startsWith("{")) {
+                JSONObject obj = new JSONObject(raw);
+                String msg = obj.optString("error", "");
+                if (!msg.isEmpty()) return msg;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String nonEmptyOrNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private File downloadFacebookFile(String url, String quality, String filename, String requestId) throws Exception {

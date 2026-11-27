@@ -16,10 +16,11 @@ import {
   saveDropdownSpeed,
 } from "@/lib/dropdown-animations";
 import { applyThemeCustomization, loadThemeCustomization } from "@/lib/theme-customization";
-import { applyDisplayScale, loadDisplayScale } from "@/lib/display-scale";
+import { applyDisplayScale, applyTopBarOffset, loadDisplayScale, loadTopBarOffset } from "@/lib/display-scale";
 import { applyFontStyle, loadFontStyle } from "@/lib/font-style";
 import { loadUiStyle, saveUiStyle } from "@/lib/ui-style";
 import { Layout } from "@/components/layout";
+import { NotificationGate } from "@/components/notification-gate";
 import { SplashIntro } from "@/components/splash-intro";
 import Home from "@/pages/home";
 import History from "@/pages/history";
@@ -187,6 +188,7 @@ function App() {
       if (customization) applyThemeCustomization(customization);
       saveUiStyle(loadUiStyle());
       applyDisplayScale(loadDisplayScale());
+      applyTopBarOffset(loadTopBarOffset());
       applyFontStyle(loadFontStyle());
       applyBounceAnimation(loadBounceAnimationEnabled());
       saveDropdownAnimation(loadDropdownAnimation());
@@ -216,10 +218,12 @@ function App() {
             ) : (
               <>
                 <SplashIntro />
-                <Layout>
-                  <Router />
-                </Layout>
-                <AppUpdateChecker />
+                <NotificationGate>
+                  <Layout>
+                    <Router />
+                  </Layout>
+                  <AppUpdateChecker />
+                </NotificationGate>
               </>
             )}
             <Toaster />

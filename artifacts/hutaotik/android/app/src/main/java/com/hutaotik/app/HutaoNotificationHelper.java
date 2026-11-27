@@ -196,15 +196,45 @@ public final class HutaoNotificationHelper {
         int activeCount,
         boolean cancellable
     ) {
+        return buildDownloadProgressNotification(
+            context,
+            taskId,
+            title,
+            percent,
+            loadedBytes,
+            totalBytes,
+            etaSeconds,
+            status,
+            activeCount,
+            cancellable,
+            false
+        );
+    }
+
+    public static Notification buildDownloadProgressNotification(
+        Context context,
+        String taskId,
+        String title,
+        int percent,
+        long loadedBytes,
+        long totalBytes,
+        long etaSeconds,
+        String status,
+        int activeCount,
+        boolean cancellable,
+        boolean isFetch
+    ) {
         ensureChannels(context);
         int clampedPercent = Math.max(0, Math.min(100, percent));
-        boolean indeterminate = clampedPercent <= 1 && loadedBytes <= 0;
+        boolean indeterminate = isFetch
+            ? (clampedPercent <= 5)
+            : (clampedPercent <= 1 && loadedBytes <= 0);
 
         StringBuilder body = new StringBuilder();
         if (status != null && !status.trim().isEmpty()) {
             body.append(status.trim());
         } else {
-            body.append("Downloading…");
+            body.append(isFetch ? "Fetching video info…" : "Downloading…");
         }
         if (loadedBytes > 0 && totalBytes > 0) {
             body.append(" · ").append(formatBytes(loadedBytes)).append(" / ").append(formatBytes(totalBytes));
@@ -218,14 +248,22 @@ public final class HutaoNotificationHelper {
             body.append(" (").append(clampedPercent).append("%)");
         }
 
-        String subText = activeCount > 1
-            ? activeCount + " active downloads · Safe to leave app"
-            : "Running in background · Safe to leave app";
+        String subText;
+        if (isFetch) {
+            subText = activeCount > 1
+                ? activeCount + " background tasks · Safe to leave app"
+                : "Fetching in background · Safe to leave app";
+        } else {
+            subText = activeCount > 1
+                ? activeCount + " active downloads · Safe to leave app"
+                : "Running in background · Safe to leave app";
+        }
 
+        String defaultTitle = isFetch ? "Fetching video…" : "Downloading media…";
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_DOWNLOAD_PROGRESS)
             .setSmallIcon(R.drawable.ic_stat_download)
             .setColor(COLOR_EMBER)
-            .setContentTitle(title != null && !title.trim().isEmpty() ? title.trim() : "Downloading media…")
+            .setContentTitle(title != null && !title.trim().isEmpty() ? title.trim() : defaultTitle)
             .setContentText(body.toString())
             .setSubText(subText)
             .setOngoing(true)
@@ -250,6 +288,72 @@ public final class HutaoNotificationHelper {
         }
 
         return builder.build();
+    }
+
+    public static void showFetchCompleteNotification(
+        Context context,
+        int notificationId,
+        String platformLabel,
+        String videoTitle
+    ) {
+        if (!isDownloadsEnabled(context) || !hasNotificationPermission(context)) return;
+        ensureChannels(context);
+
+        String safePlatform = (platformLabel != null && !platformLabel.trim().isEmpty())
+            ? platformLabel.trim()
+            : "Video";
+        String safeTitle = (videoTitle != null && !videoTitle.trim().isEmpty())
+            ? videoTitle.trim()
+            : safePlatform + " link fetched";
+        String summary = safeTitle + " · Tap to open & download in HutaoTik.";
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_DOWNLOAD_COMPLETE)
+            .setSmallIcon(R.drawable.ic_stat_download)
+            .setColor(COLOR_EMERALD)
+            .setContentTitle(safePlatform + " Video Ready!")
+            .setContentText(summary)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(safeTitle + "\nTap to open HutaoTik and download."))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setContentIntent(buildAppPendingIntent(context, "/", notificationId));
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void showFetchFailedNotification(
+        Context context,
+        int notificationId,
+        String platformLabel,
+        String reason
+    ) {
+        if (!isDownloadsEnabled(context) || !hasNotificationPermission(context)) return;
+        ensureChannels(context);
+
+        String safePlatform = (platformLabel != null && !platformLabel.trim().isEmpty())
+            ? platformLabel.trim()
+            : "Video";
+        String body = (reason != null && !reason.trim().isEmpty())
+            ? reason.trim()
+            : "Could not fetch this link. Tap to retry in HutaoTik.";
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_DOWNLOAD_COMPLETE)
+            .setSmallIcon(R.drawable.ic_stat_download)
+            .setColor(COLOR_ROSE)
+            .setContentTitle(safePlatform + " Fetch Failed")
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(buildAppPendingIntent(context, "/", notificationId));
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build());
+        } catch (Throwable ignored) {
+        }
     }
 
     public static void showDownloadCompleteNotification(

@@ -68,71 +68,99 @@ interface YtDlpOutput {
   formats?: YtDlpFormat[];
 }
 
+const YOUTUBE_INFO_CACHE_TTL_MS = 300_000;
+const youtubeInfoCache = new Map<string, { expiresAt: number; info: YouTubeInfo }>();
+const youtubeInfoInFlight = new Map<string, Promise<YouTubeInfo | null>>();
+
 export async function fetchYouTubeInfo(url: string): Promise<YouTubeInfo | null> {
   if (!isYouTubeUrl(url)) return null;
 
-  try {
-    const { stdout } = await execFileAsync(
-      YT_DLP,
-      [
-        "--dump-json",
-        "--no-playlist",
-        "--no-warnings",
-        "--socket-timeout", "20",
-        url,
-      ],
-      { timeout: 35_000 }
-    );
+  const cacheKey = url.trim();
+  const cached = youtubeInfoCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.info;
 
-    const data = JSON.parse(stdout) as YtDlpOutput;
-    const allFormats = data.formats ?? [];
+  const existing = youtubeInfoInFlight.get(cacheKey);
+  if (existing) return existing;
 
-    // Prefer AAC audio so high-resolution video-only streams can be muxed into MP4.
-    const bestAudio = allFormats
-      .filter((f) => f.vcodec === "none" && f.acodec?.startsWith("mp4a") && f.ext === "m4a")
-      .sort((a, b) => (b.tbr ?? 0) - (a.tbr ?? 0))[0];
-    const audioId = bestAudio?.format_id;
-    const candidates = allFormats
-      .filter((f) =>
-        typeof f.format_id === "string" &&
-        typeof f.vcodec === "string" &&
-        f.vcodec !== "none" &&
-        typeof f.acodec === "string" &&
-        (f.ext === "mp4" || f.ext === "webm") &&
-        (f.acodec !== "none" || audioId !== undefined)
-      )
-      .sort((a, b) =>
-        (b.height ?? 0) - (a.height ?? 0) ||
-        (b.tbr ?? 0) - (a.tbr ?? 0) ||
-        Number(b.acodec !== "none") - Number(a.acodec !== "none")
+  const task = (async (): Promise<YouTubeInfo | null> => {
+    try {
+      const { stdout } = await execFileAsync(
+        YT_DLP,
+        [
+          "--dump-json",
+          "--no-playlist",
+          "--no-warnings",
+          "--no-check-certificates",
+          "--extractor-args", "youtube:skip=translated_subs",
+          "--socket-timeout", "12",
+          url,
+        ],
+        { timeout: 25_000, maxBuffer: 8 * 1024 * 1024 }
       );
 
-    const seenHeights = new Set<number>();
-    const formats: YouTubeFormat[] = [];
+      const data = JSON.parse(stdout) as YtDlpOutput;
+      const allFormats = data.formats ?? [];
 
-    for (const f of candidates) {
-      const h = f.height ?? 0;
-      if (h <= 0 || seenHeights.has(h) || !f.format_id) continue;
-      const needsMux = f.acodec === "none";
-      seenHeights.add(h);
-      formats.push({
-        formatStr: needsMux ? `${f.format_id}+${audioId}` : f.format_id,
-        qualityLabel: `${h}p`,
-        needsMux,
-      });
+      // Prefer AAC audio so high-resolution video-only streams can be muxed into MP4.
+      const bestAudio = allFormats
+        .filter((f) => f.vcodec === "none" && f.acodec?.startsWith("mp4a") && f.ext === "m4a")
+        .sort((a, b) => (b.tbr ?? 0) - (a.tbr ?? 0))[0];
+      const audioId = bestAudio?.format_id;
+      const candidates = allFormats
+        .filter((f) =>
+          typeof f.format_id === "string" &&
+          typeof f.vcodec === "string" &&
+          f.vcodec !== "none" &&
+          typeof f.acodec === "string" &&
+          (f.ext === "mp4" || f.ext === "webm") &&
+          (f.acodec !== "none" || audioId !== undefined)
+        )
+        .sort((a, b) =>
+          (b.height ?? 0) - (a.height ?? 0) ||
+          (b.tbr ?? 0) - (a.tbr ?? 0) ||
+          Number(b.acodec !== "none") - Number(a.acodec !== "none")
+        );
+
+      const seenHeights = new Set<number>();
+      const formats: YouTubeFormat[] = [];
+
+      for (const f of candidates) {
+        const h = f.height ?? 0;
+        if (h <= 0 || seenHeights.has(h) || !f.format_id) continue;
+        const needsMux = f.acodec === "none";
+        seenHeights.add(h);
+        formats.push({
+          formatStr: needsMux ? `${f.format_id}+${audioId}` : f.format_id,
+          qualityLabel: `${h}p`,
+          needsMux,
+        });
+      }
+
+      const result: YouTubeInfo = {
+        id: data.id ?? "",
+        title: data.title ?? "YouTube Video",
+        thumbnail: data.thumbnail ?? null,
+        channelName: data.channel ?? data.uploader ?? "Unknown",
+        duration: data.duration ?? 0,
+        formats,
+      };
+      if (youtubeInfoCache.size >= 200) {
+        const oldest = youtubeInfoCache.keys().next().value;
+        if (oldest) youtubeInfoCache.delete(oldest);
+      }
+      youtubeInfoCache.set(cacheKey, { expiresAt: Date.now() + YOUTUBE_INFO_CACHE_TTL_MS, info: result });
+      return result;
+    } catch (err) {
+      logger.error({ err, url }, "youtube: fetchInfo error");
+      return null;
     }
+  })();
 
-    return {
-      id: data.id ?? "",
-      title: data.title ?? "YouTube Video",
-      thumbnail: data.thumbnail ?? null,
-      channelName: data.channel ?? data.uploader ?? "Unknown",
-      duration: data.duration ?? 0,
-      formats,
-    };
-  } catch (err) {
-    logger.error({ err, url }, "youtube: fetchInfo error");
-    return null;
+  youtubeInfoInFlight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    youtubeInfoInFlight.delete(cacheKey);
   }
 }
 

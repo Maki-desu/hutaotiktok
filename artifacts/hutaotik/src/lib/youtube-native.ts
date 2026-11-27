@@ -2,6 +2,7 @@ import {
   registerNativeDownloadProgressListener,
   type DownloadProgressState,
 } from "@/lib/download-progress";
+import { clearPendingBackgroundFetch } from "@/lib/background-fetch";
 
 export interface NativeYouTubeFormat {
   formatStr: string;
@@ -49,6 +50,7 @@ function requestNativeYouTube(
     const pending = pendingRequests.get(requestId);
     if (!pending) return;
     pendingRequests.delete(requestId);
+    clearPendingBackgroundFetch(requestId);
 
     try {
       const result = JSON.parse(response) as NativeYouTubeResponse;
@@ -80,8 +82,14 @@ export function isNativeYouTubeAvailable(): boolean {
   return !!bridge?.getYouTubeInfo && !!bridge.downloadYouTube;
 }
 
-export function fetchYouTubeInfoOnDevice(url: string): Promise<NativeYouTubeInfo> {
-  return requestNativeYouTube((bridge, requestId) => bridge.getYouTubeInfo(url, requestId))
+export function fetchYouTubeInfoOnDevice(
+  url: string,
+  onProgress?: (progress: DownloadProgressState) => void,
+): Promise<NativeYouTubeInfo> {
+  return requestNativeYouTube(
+    (bridge, requestId) => bridge.getYouTubeInfo(url, requestId),
+    onProgress,
+  )
     .then((response) => {
       if (!response.id || !Array.isArray(response.formats)) {
         throw new Error("The on-device YouTube downloader returned invalid video information.");

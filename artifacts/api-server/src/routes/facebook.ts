@@ -5,12 +5,20 @@ import { db, adminSettingsTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
+let facebookEnabledCache: { value: boolean; expiresAt: number } | null = null;
+
 async function isFacebookEnabled(): Promise<boolean> {
+  const now = Date.now();
+  if (facebookEnabledCache && facebookEnabledCache.expiresAt > now) {
+    return facebookEnabledCache.value;
+  }
   const [s] = await db
     .select({ facebookEnabled: adminSettingsTable.facebookEnabled })
     .from(adminSettingsTable)
     .limit(1);
-  return s?.facebookEnabled !== false;
+  const enabled = s?.facebookEnabled !== false;
+  facebookEnabledCache = { value: enabled, expiresAt: now + 30_000 };
+  return enabled;
 }
 
 router.get("/facebook/info", async (req, res): Promise<void> => {

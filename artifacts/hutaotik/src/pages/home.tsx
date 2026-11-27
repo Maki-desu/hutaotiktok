@@ -34,15 +34,22 @@ import {
   X,
 } from "lucide-react";
 import { SiTiktok, SiFacebook, SiYoutube, SiX, SiPinterest, SiInstagram } from "react-icons/si";
-import { FacebookSection } from "@/components/facebook-section";
-import { SocialVideoSection } from "@/components/social-video-section";
-import { YoutubeSection } from "@/components/youtube-section";
-import { TwitterSection } from "@/components/twitter-section";
+import { FacebookSection, seedFacebookInfoCache } from "@/components/facebook-section";
+import { SocialVideoSection, seedSocialInfoCache } from "@/components/social-video-section";
+import { YoutubeSection, seedYouTubeInfoCache } from "@/components/youtube-section";
+import { TwitterSection, seedTwitterInfoCache } from "@/components/twitter-section";
 import { isTwitterUrl } from "@/lib/twitter-url";
 import { extractFirstHttpUrl, isPinterestUrl } from "@/lib/pinterest-url";
 import { isInstagramUrl } from "@/lib/instagram-url";
 import { isYouTubeUrl } from "@/lib/youtube-url";
 import { fetchTikTokFromTikwm } from "@/lib/tikwm";
+import { createLinkedAbortController, createTimedCache, raceFastest } from "@/lib/fetch-cache";
+import {
+  consumePendingBackgroundFetch,
+  fetchTikTokInfoOnDevice,
+  hasValidTikTokMedia,
+  isNativeTikTokFetchAvailable,
+} from "@/lib/background-fetch";
 import { apiUrl } from "@/lib/api-url";
 import {
   DropdownMenu,
@@ -70,10 +77,13 @@ import {
 } from "@/lib/background-download";
 import {
   finishLiveDownloadNotif,
+  notifyWebFetchComplete,
   startLiveDownloadNotif,
   updateLiveDownloadNotif,
 } from "@/lib/notifications";
 import { useToast } from "@/hooks/use-toast";
+
+const tiktokInfoCache = createTimedCache<Awaited<ReturnType<typeof fetchTiktokVideo>>>(300_000, 60);
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -101,6 +111,7 @@ export default function Home() {
   // Downloading Animation & Completion Visual State
   const [isDownloadingInApp, setIsDownloadingInApp] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
+  const [tiktokFetchStatus, setTiktokFetchStatus] = useState("Fetching in background — safe to exit app…");
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{ filename: string; folder: string } | null>(null);
 
   const { toast } = useToast();
@@ -126,20 +137,48 @@ export default function Home() {
   const fetchMutation = useFetchTiktokVideo({
     mutation: {
       mutationFn: async ({ data }) => {
-        const signal = AbortSignal.timeout(120_000);
-        try {
-          return await fetchTiktokVideo(data, { signal });
-        } catch (error) {
-          if (
-            typeof error !== "object" ||
-            error === null ||
-            !("status" in error) ||
-            typeof error.status !== "number" ||
-            error.status < 500
-          ) {
-            throw error;
+        const cached = tiktokInfoCache.get(data.url);
+        if (cached) return cached;
+
+        setTiktokFetchStatus("Fetching TikTok in background — safe to exit app…");
+        let nativeError: Error | null = null;
+        if (isNativeTikTokFetchAvailable()) {
+          try {
+            const nativeResult = await fetchTikTokInfoOnDevice(data.url, (progress) => {
+              if (progress.status) setTiktokFetchStatus(progress.status);
+            });
+            tiktokInfoCache.set(data.url, nativeResult);
+            return nativeResult;
+          } catch (nativeErr) {
+            if (nativeErr instanceof Error) {
+              if (/cancelled|invalid tiktok url|enter a valid tiktok url/i.test(nativeErr.message)) {
+                throw nativeErr;
+              }
+              nativeError = nativeErr;
+            }
           }
-          return fetchTikTokFromTikwm(data.url, signal);
+        }
+
+        const { controller, cleanup } = createLinkedAbortController(undefined, 55_000);
+        try {
+          const result = await raceFastest(
+            [
+              (childSignal) => fetchTikTokFromTikwm(data.url, childSignal),
+              (childSignal) => fetchTiktokVideo(data, { signal: childSignal }),
+            ],
+            controller.signal,
+          );
+          tiktokInfoCache.set(data.url, result);
+          notifyWebFetchComplete("TikTok", result.title);
+          return result;
+        } catch (fallbackErr) {
+          if (fallbackErr instanceof Error && fallbackErr.message) {
+            throw fallbackErr;
+          }
+          if (nativeError) throw nativeError;
+          throw new Error("Could not fetch this TikTok video. Please try again.");
+        } finally {
+          cleanup();
         }
       },
     },
@@ -228,8 +267,8 @@ export default function Home() {
     const now = Date.now();
     const diff = now - lastFetchTime.current;
 
-    if (diff < 3000) {
-      const remaining = Math.ceil((3000 - diff) / 1000);
+    if (diff < 800) {
+      const remaining = Math.ceil((800 - diff) / 1000);
       setCooldown(remaining);
       if (cooldownRef.current) clearInterval(cooldownRef.current);
       cooldownRef.current = setInterval(() => {
@@ -244,7 +283,6 @@ export default function Home() {
       return;
     }
 
-    fetchMutation.reset();
     setPlatform("tiktok");
     setSubmittedUrl(trimmed);
     lastFetchTime.current = now;
@@ -263,6 +301,72 @@ export default function Home() {
 
   const handleFetchRef = useRef(handleFetch);
   handleFetchRef.current = handleFetch;
+
+  // Restore any video fetched in the background while the user exited/switched away from the app
+  useEffect(() => {
+    const restorePendingFetch = () => {
+      const pending = consumePendingBackgroundFetch();
+      if (!pending) return;
+
+      setUrl(pending.url);
+      setError(null);
+      setDownloadSuccessInfo(null);
+      setPlatform(pending.platform);
+
+      if (pending.platform === "tiktok") {
+        if (hasValidTikTokMedia(pending.data)) {
+          tiktokInfoCache.set(
+            pending.url,
+            pending.data as unknown as Awaited<ReturnType<typeof fetchTiktokVideo>>,
+          );
+        }
+        setSubmittedUrl(pending.url);
+        fetchMutation.mutate({ data: { url: pending.url } });
+      } else if (pending.platform === "youtube") {
+        seedYouTubeInfoCache(pending.url, pending.data);
+        setSubmittedUrl(pending.url);
+      } else if (pending.platform === "facebook") {
+        seedFacebookInfoCache(pending.url, pending.data);
+        setSubmittedUrl(pending.url);
+      } else if (pending.platform === "twitter") {
+        seedTwitterInfoCache(pending.url, pending.data);
+        setSubmittedUrl(pending.url);
+      } else if (pending.platform === "instagram" || pending.platform === "pinterest") {
+        seedSocialInfoCache(pending.platform, pending.url, pending.data);
+        setSubmittedUrl(pending.url);
+        setFetchNonce((n) => n + 1);
+      }
+    };
+
+    restorePendingFetch();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") restorePendingFetch();
+    };
+    window.addEventListener("focus", restorePendingFetch);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    const handles: Array<{ remove?: () => Promise<void> }> = [];
+    if (typeof window !== "undefined" && (window as any).Capacitor?.Plugins?.App) {
+      Promise.resolve(
+        (window as any).Capacitor.Plugins.App.addListener(
+          "appStateChange",
+          (state: { isActive: boolean }) => {
+            if (state?.isActive) restorePendingFetch();
+          },
+        ),
+      )
+        .then((handle) => {
+          if (handle) handles.push(handle);
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener("focus", restorePendingFetch);
+      document.removeEventListener("visibilitychange", onVisibility);
+      handles.forEach((h) => void h.remove?.());
+    };
+  }, []);
 
   // Auto-handle shared URLs from TikTok or Facebook Share Intents
   useEffect(() => {
@@ -507,14 +611,31 @@ export default function Home() {
       const mimeType = quality === "audio" ? "audio/mpeg" : "video/mp4";
 
       if (isNativeBackgroundDownloadAvailable() && requestUrl.startsWith("https://")) {
-        await downloadUrlInBackgroundNative({
-          url: requestUrl,
-          filename,
-          folderName,
-          title: `TikTok · ${safeTitle || video.authorUsername || "Video"}`,
-          mimeType,
-          onProgress: setDownloadProgress,
-        });
+        try {
+          await downloadUrlInBackgroundNative({
+            url: requestUrl,
+            filename,
+            folderName,
+            title: `TikTok · ${safeTitle || video.authorUsername || "Video"}`,
+            mimeType,
+            onProgress: setDownloadProgress,
+          });
+        } catch (proxyErr) {
+          if (proxyErr instanceof Error && /cancelled/i.test(proxyErr.message)) {
+            throw proxyErr;
+          }
+          if (!downloadUrl.startsWith("https://")) {
+            throw proxyErr;
+          }
+          await downloadUrlInBackgroundNative({
+            url: downloadUrl,
+            filename,
+            folderName,
+            title: `TikTok · ${safeTitle || video.authorUsername || "Video"}`,
+            mimeType,
+            onProgress: setDownloadProgress,
+          });
+        }
       } else {
         const res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
         if (!res.ok) throw new Error("Server returned HTTP " + res.status);
@@ -1081,6 +1202,10 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+                <span className="truncate">{tiktokFetchStatus} · You can leave the app &amp; we&apos;ll notify you when ready.</span>
               </div>
             </div>
           )}

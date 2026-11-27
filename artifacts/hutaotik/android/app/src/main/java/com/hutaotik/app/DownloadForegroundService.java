@@ -39,7 +39,7 @@ public class DownloadForegroundService extends Service {
 
     private static final int FOREGROUND_NOTIF_ID = 4100;
     private static final AtomicInteger NEXT_NOTIF_ID = new AtomicInteger(4200);
-    private static final ExecutorService WORKER_POOL = Executors.newFixedThreadPool(3);
+    private static final ExecutorService WORKER_POOL = Executors.newFixedThreadPool(5);
     private static final ConcurrentHashMap<String, TaskContext> ACTIVE_TASKS = new ConcurrentHashMap<>();
     private static volatile DownloadForegroundService runningService;
     private static volatile ProgressRelay progressRelay;
@@ -78,6 +78,7 @@ public class DownloadForegroundService extends Service {
         public final String title;
         public final String folderName;
         public final boolean cancellable;
+        public final boolean isFetch;
         public final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean finalized = new AtomicBoolean(false);
 
@@ -91,12 +92,27 @@ public class DownloadForegroundService extends Service {
         private volatile int lastNotifPercent = -1;
 
         TaskContext(Context appContext, String taskId, String title, String folderName, boolean cancellable) {
+            this(appContext, taskId, title, folderName, cancellable, false);
+        }
+
+        TaskContext(
+            Context appContext,
+            String taskId,
+            String title,
+            String folderName,
+            boolean cancellable,
+            boolean isFetch
+        ) {
             this.appContext = appContext;
             this.taskId = taskId;
             this.notificationId = NEXT_NOTIF_ID.getAndIncrement();
             this.title = title;
             this.folderName = folderName;
             this.cancellable = cancellable;
+            this.isFetch = isFetch;
+            if (isFetch) {
+                this.lastStatus = "Fetching video info…";
+            }
         }
 
         public boolean isCancelled() {
@@ -162,6 +178,34 @@ public class DownloadForegroundService extends Service {
             refreshNotifications(appContext);
         }
 
+        public void markFetchCompleted(String platformLabel, String videoTitle) {
+            if (!finalized.compareAndSet(false, true)) return;
+            ACTIVE_TASKS.remove(taskId);
+            cancelSecondaryNotification(appContext, notificationId);
+            HutaoNotificationHelper.showFetchCompleteNotification(
+                appContext,
+                notificationId,
+                platformLabel,
+                videoTitle
+            );
+            refreshNotifications(appContext);
+        }
+
+        public void markFetchFailed(String platformLabel, String reason) {
+            if (!finalized.compareAndSet(false, true)) return;
+            ACTIVE_TASKS.remove(taskId);
+            cancelSecondaryNotification(appContext, notificationId);
+            if (!cancelled.get()) {
+                HutaoNotificationHelper.showFetchFailedNotification(
+                    appContext,
+                    notificationId,
+                    platformLabel,
+                    reason
+                );
+            }
+            refreshNotifications(appContext);
+        }
+
         public void markCancelledSilently() {
             if (!finalized.compareAndSet(false, true)) return;
             cancelled.set(true);
@@ -191,6 +235,48 @@ public class DownloadForegroundService extends Service {
 
     public static TaskContext getActiveTask(String taskId) {
         return taskId != null ? ACTIVE_TASKS.get(taskId) : null;
+    }
+
+    public static void runBackgroundFetchTask(
+        Context context,
+        String taskId,
+        String title,
+        String platformLabel,
+        boolean cancellable,
+        BackgroundWork work,
+        Runnable onErrorFallback
+    ) {
+        Context appContext = context.getApplicationContext();
+        HutaoNotificationHelper.ensureChannels(appContext);
+        TaskContext task = new TaskContext(appContext, taskId, title, "", cancellable, true);
+        ACTIVE_TASKS.put(taskId, task);
+        requestForegroundSync(appContext);
+
+        WORKER_POOL.execute(() -> {
+            task.workerThread = Thread.currentThread();
+            try {
+                work.run(task);
+            } catch (CancellationException ignored) {
+                task.markCancelledSilently();
+            } catch (Throwable e) {
+                Log.e(TAG, "Background fetch task failed: " + taskId, e);
+                task.markFetchFailed(
+                    platformLabel,
+                    e.getMessage() != null ? e.getMessage() : "Could not fetch video information."
+                );
+                if (onErrorFallback != null) {
+                    try {
+                        onErrorFallback.run();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } finally {
+                task.workerThread = null;
+                if (ACTIVE_TASKS.remove(taskId) != null) {
+                    refreshNotifications(appContext);
+                }
+            }
+        });
     }
 
     public static void runBackgroundTask(
@@ -397,7 +483,8 @@ public class DownloadForegroundService extends Service {
                 primary.lastEtaSeconds,
                 primary.lastStatus,
                 ACTIVE_TASKS.size(),
-                primary.cancellable
+                primary.cancellable,
+                primary.isFetch
             );
             NotificationManagerCompat.from(appContext).notify(FOREGROUND_NOTIF_ID, notif);
         } catch (Throwable ignored) {
@@ -436,18 +523,20 @@ public class DownloadForegroundService extends Service {
                 primary.lastEtaSeconds,
                 primary.lastStatus,
                 ACTIVE_TASKS.size(),
-                primary.cancellable
+                primary.cancellable,
+                primary.isFetch
             )
             : HutaoNotificationHelper.buildDownloadProgressNotification(
                 this,
                 "",
-                "Preparing HutaoTik download…",
+                "Preparing HutaoTik task…",
                 0,
                 0,
                 0,
                 -1,
                 "Starting…",
                 0,
+                false,
                 false
             );
 
@@ -496,7 +585,8 @@ public class DownloadForegroundService extends Service {
                 primary.lastEtaSeconds,
                 primary.lastStatus,
                 ACTIVE_TASKS.size(),
-                primary.cancellable
+                primary.cancellable,
+                primary.isFetch
             );
             NotificationManagerCompat.from(this).notify(FOREGROUND_NOTIF_ID, fgNotification);
         } catch (Throwable ignored) {
@@ -524,7 +614,8 @@ public class DownloadForegroundService extends Service {
                     task.lastEtaSeconds,
                     task.lastStatus,
                     count,
-                    task.cancellable
+                    task.cancellable,
+                    task.isFetch
                 );
                 NotificationManagerCompat.from(this).notify(task.notificationId, notif);
             } catch (Throwable ignored) {

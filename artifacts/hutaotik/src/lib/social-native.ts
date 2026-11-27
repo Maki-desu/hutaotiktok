@@ -2,6 +2,7 @@ import {
   registerNativeDownloadProgressListener,
   type DownloadProgressState,
 } from "@/lib/download-progress";
+import { clearPendingBackgroundFetch } from "@/lib/background-fetch";
 
 export type SocialVideoPlatform = "pinterest" | "instagram";
 
@@ -81,6 +82,7 @@ function requestNativeSocialVideo(
     if (!pending) return;
     clearTimeout(pending.timer);
     pendingRequests.delete(requestId);
+    clearPendingBackgroundFetch(requestId);
 
     try {
       const result = JSON.parse(response) as NativeSocialVideoResponse;
@@ -122,10 +124,13 @@ export function isNativeSocialVideoAvailable(): boolean {
 export function fetchSocialVideoInfoOnDevice(
   platform: SocialVideoPlatform,
   url: string,
+  onProgress?: (progress: DownloadProgressState) => void,
 ): Promise<NativeSocialVideoInfo> {
   const providerName = platform === "instagram" ? "Instagram" : "Pinterest";
-  return requestNativeSocialVideo(90_000, (bridge, requestId) =>
-    bridge.getSocialVideoInfo(platform, url, requestId),
+  return requestNativeSocialVideo(
+    90_000,
+    (bridge, requestId) => bridge.getSocialVideoInfo(platform, url, requestId),
+    onProgress,
   ).then((response) => ({
     id: response.id ?? "",
     title: response.title ?? `${providerName} Video`,

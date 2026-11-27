@@ -16,6 +16,7 @@ import {
 } from "@/lib/download-progress";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
+import { createLinkedAbortController, createTimedCache } from "@/lib/fetch-cache";
 import { useToast } from "@/hooks/use-toast";
 
 interface FBInfo {
@@ -61,9 +62,28 @@ async function fetchFacebookInfoDirect(inputUrl: string): Promise<FBInfo> {
   };
 }
 
+import { notifyWebFetchComplete } from "@/lib/notifications";
+
+const facebookInfoCache = createTimedCache<FBInfo>(300_000, 60);
+
+export function seedFacebookInfoCache(url: string, data: unknown): void {
+  if (!data || typeof data !== "object") return;
+  const info = data as Partial<FBInfo>;
+  const normalized: FBInfo = {
+    title: info.title ?? "Facebook Video",
+    thumbnail: info.thumbnail ?? null,
+    hdUrl: info.hdUrl ?? null,
+    sdUrl: info.sdUrl ?? null,
+    nativeDownload: info.nativeDownload ?? true,
+  };
+  facebookInfoCache.set(`native:${url}`, normalized);
+  facebookInfoCache.set(`api:${url}`, normalized);
+}
+
 export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [info, setInfo] = useState<FBInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<string>("Fetching Facebook video…");
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -80,29 +100,51 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
       return;
     }
 
+    const nativeBridge = isNativeFacebookAvailable();
+    const cacheKey = `${nativeBridge ? "native" : "api"}:${url}`;
+    const cached = facebookInfoCache.get(cacheKey);
+    if (cached) {
+      setInfo(cached);
+      setError(null);
+      setLoading(false);
+      setDownloadSuccessInfo(null);
+      setSelected(cached.nativeDownload ? "hd" : cached.hdUrl ? "hd" : cached.sdUrl ? "sd" : "audio");
+      return;
+    }
+
     const controller = new AbortController();
     setLoading(true);
+    setFetchStatus("Fetching in background — safe to exit app…");
     setInfo(null);
     setError(null);
     setSelected(null);
     setDownloadSuccessInfo(null);
 
-    const nativeBridge = isNativeFacebookAvailable();
+    const { controller: apiController, cleanup: cleanupApiTimeout } = createLinkedAbortController(
+      controller.signal,
+      25_000,
+    );
     const infoRequest = nativeBridge
-      ? fetchFacebookInfoOnDevice(url)
+      ? fetchFacebookInfoOnDevice(url, (progress) => {
+          if (progress.status) setFetchStatus(progress.status);
+        })
       : fetch(apiUrl(`/api/facebook/info?url=${encodeURIComponent(url)}`), {
-          signal: controller.signal,
-        }).then(async (r) => {
-          if (!r.ok) {
-            const d = (await r.json()) as { error?: string };
-            throw new Error(d.error ?? "Failed to fetch Facebook info");
-          }
-          return r.json() as Promise<FBInfo>;
-        });
+          signal: apiController.signal,
+        })
+          .then(async (r) => {
+            if (!r.ok) {
+              const d = (await r.json()) as { error?: string };
+              throw new Error(d.error ?? "Failed to fetch Facebook info");
+            }
+            return r.json() as Promise<FBInfo>;
+          })
+          .finally(cleanupApiTimeout);
 
     infoRequest
       .then((data) => {
         if (controller.signal.aborted) return;
+        facebookInfoCache.set(cacheKey, data);
+        notifyWebFetchComplete("Facebook", data.title);
         setInfo(data);
         setSelected(data.nativeDownload ? "hd" : data.hdUrl ? "hd" : data.sdUrl ? "sd" : "audio");
       })
@@ -223,6 +265,10 @@ export function FacebookSection({ url, folderName, onOpenFolderPicker }: Props) 
               ))}
             </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+          <span className="truncate">{fetchStatus} · You can leave the app &amp; we&apos;ll notify you when ready.</span>
         </div>
       </div>
     );

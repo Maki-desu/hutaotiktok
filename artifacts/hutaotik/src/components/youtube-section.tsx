@@ -13,6 +13,7 @@ import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
 import { useToast } from "@/hooks/use-toast";
 import { isYouTubeUrl } from "@/lib/youtube-url";
+import { createTimedCache } from "@/lib/fetch-cache";
 import {
   downloadYouTubeOnDevice,
   fetchYouTubeInfoOnDevice,
@@ -76,9 +77,30 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+import { notifyWebFetchComplete } from "@/lib/notifications";
+
+const youtubeInfoCache = createTimedCache<YTInfo>(300_000, 60);
+
+export function seedYouTubeInfoCache(url: string, data: unknown): void {
+  if (!data || typeof data !== "object") return;
+  const info = data as Partial<YTInfo>;
+  if (!info.id || !Array.isArray(info.formats)) return;
+  const normalized: YTInfo = {
+    id: info.id,
+    title: info.title ?? "YouTube Video",
+    thumbnail: info.thumbnail ?? null,
+    channelName: info.channelName ?? "Unknown",
+    duration: info.duration ?? 0,
+    formats: info.formats,
+  };
+  youtubeInfoCache.set(`native:${url}`, normalized);
+  youtubeInfoCache.set(`api:${url}`, normalized);
+}
+
 export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [info, setInfo] = useState<YTInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<string>("Fetching YouTube video…");
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -97,17 +119,36 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
       return;
     }
 
+    const useNativeDownloader = isNativeYouTubeAvailable();
+    setNativeOnDevice(useNativeDownloader);
+
+    const cacheKey = `${useNativeDownloader ? "native" : "api"}:${url}`;
+    const cached = youtubeInfoCache.get(cacheKey);
+    if (cached) {
+      setInfo(cached);
+      setError(null);
+      setLoading(false);
+      setDownloadSuccessInfo(null);
+      setSelected(
+        cached.formats.length > 0
+          ? { type: "video", formatStr: cached.formats[0].formatStr }
+          : { type: "audio" },
+      );
+      return;
+    }
+
     const controller = new AbortController();
     setLoading(true);
+    setFetchStatus("Fetching in background — safe to exit app…");
     setInfo(null);
     setError(null);
     setSelected(null);
     setDownloadSuccessInfo(null);
-    const useNativeDownloader = isNativeYouTubeAvailable();
-    setNativeOnDevice(useNativeDownloader);
 
     const infoRequest = useNativeDownloader
-      ? fetchYouTubeInfoOnDevice(url)
+      ? fetchYouTubeInfoOnDevice(url, (progress) => {
+          if (progress.status) setFetchStatus(progress.status);
+        })
       : fetch(apiUrl(`/api/youtube/info?url=${encodeURIComponent(url)}`), {
           signal: controller.signal,
         }).then((response) => parseApiResponse<YTInfo>(response));
@@ -115,6 +156,8 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
     infoRequest
       .then((data) => {
         if (controller.signal.aborted) return;
+        youtubeInfoCache.set(cacheKey, data);
+        notifyWebFetchComplete("YouTube", data.title);
         setInfo(data);
         if (data.formats.length > 0) {
           setSelected({ type: "video", formatStr: data.formats[0].formatStr });
@@ -251,6 +294,10 @@ export function YoutubeSection({ url, folderName, onOpenFolderPicker }: Props) {
               ))}
             </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+          <span className="truncate">{fetchStatus} · You can leave the app &amp; we&apos;ll notify you when ready.</span>
         </div>
       </div>
     );

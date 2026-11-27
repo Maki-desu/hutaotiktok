@@ -142,6 +142,35 @@ export function syncNotificationsToNative(): void {
   }
 }
 
+export function hasNativeNotificationBridge(): boolean {
+  return Boolean(getBridge()?.getNotificationStatus);
+}
+
+export function shouldRequireNotificationGate(
+  status: Pick<NativeNotificationStatus, "supported" | "granted">,
+): boolean {
+  return status.supported && !status.granted;
+}
+
+export function notifyWebFetchComplete(platformLabel: string, videoTitle: string): void {
+  if (hasNativeNotificationBridge()) return;
+  if (
+    typeof window !== "undefined" &&
+    "Notification" in window &&
+    Notification.permission === "granted" &&
+    typeof document !== "undefined" &&
+    document.visibilityState !== "visible"
+  ) {
+    try {
+      new Notification(`${platformLabel} Video Ready!`, {
+        body: `${videoTitle || "Your video"} is ready to download in HutaoTik.`,
+      });
+    } catch {
+      /* ignore browser notification errors */
+    }
+  }
+}
+
 export function getNotificationStatus(): NativeNotificationStatus {
   const prefs = loadNotificationPreferences();
   const bridge = getBridge();

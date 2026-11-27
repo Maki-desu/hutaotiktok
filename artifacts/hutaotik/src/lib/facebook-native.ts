@@ -2,6 +2,7 @@ import {
   registerNativeDownloadProgressListener,
   type DownloadProgressState,
 } from "@/lib/download-progress";
+import { clearPendingBackgroundFetch } from "@/lib/background-fetch";
 
 export interface NativeFacebookInfo {
   title: string;
@@ -46,6 +47,7 @@ function requestNativeFacebook(
     const pending = pendingRequests.get(requestId);
     if (!pending) return;
     pendingRequests.delete(requestId);
+    clearPendingBackgroundFetch(requestId);
 
     try {
       const result = JSON.parse(response) as NativeFacebookResponse;
@@ -75,8 +77,14 @@ export function isNativeFacebookAvailable(): boolean {
   return typeof window !== "undefined" && !!window.AndroidStorageBridge;
 }
 
-export function fetchFacebookInfoOnDevice(url: string): Promise<NativeFacebookInfo> {
-  return requestNativeFacebook((bridge, requestId) => bridge.getFacebookInfo(url, requestId))
+export function fetchFacebookInfoOnDevice(
+  url: string,
+  onProgress?: (progress: DownloadProgressState) => void,
+): Promise<NativeFacebookInfo> {
+  return requestNativeFacebook(
+    (bridge, requestId) => bridge.getFacebookInfo(url, requestId),
+    onProgress,
+  )
     .then((response) => ({
       title: response.title ?? "Facebook Video",
       thumbnail: response.thumbnail ?? null,

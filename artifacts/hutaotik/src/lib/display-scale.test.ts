@@ -1,15 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyDisplayScale,
+  applyTopBarOffset,
   clampDisplayScale,
+  clampTopBarOffset,
   DEFAULT_DISPLAY_SCALE,
+  DEFAULT_TOP_BAR_OFFSET,
   describeDisplayScale,
+  describeTopBarOffset,
   DISPLAY_SCALE_STORAGE_KEY,
   loadDisplayScale,
+  loadTopBarOffset,
   MAX_DISPLAY_SCALE,
+  MAX_TOP_BAR_OFFSET,
   MIN_DISPLAY_SCALE,
+  MIN_TOP_BAR_OFFSET,
   onDisplayScaleChanged,
+  onTopBarOffsetChanged,
   saveDisplayScale,
+  saveTopBarOffset,
+  TOP_BAR_OFFSET_STORAGE_KEY,
 } from "./display-scale";
 
 describe("display-scale", () => {
@@ -98,5 +108,35 @@ describe("display-scale", () => {
     unsubscribe();
 
     expect(received).toEqual([80, 75]);
+  });
+
+  it("clamps, persists, applies, and broadcasts top bar height offsets", () => {
+    expect(clampTopBarOffset(Number.NaN)).toBe(DEFAULT_TOP_BAR_OFFSET);
+    expect(clampTopBarOffset(-10)).toBe(MIN_TOP_BAR_OFFSET);
+    expect(clampTopBarOffset(200)).toBe(MAX_TOP_BAR_OFFSET);
+    expect(clampTopBarOffset(30)).toBe(32);
+    expect(describeTopBarOffset(4)).toBe("Very High");
+    expect(describeTopBarOffset(16)).toBe("Default");
+    expect(describeTopBarOffset(36)).toBe("Lower");
+    expect(describeTopBarOffset(56)).toBe("Notch Safe");
+    expect(describeTopBarOffset(84)).toBe("Extra Low");
+
+    const received: number[] = [];
+    const unsubscribe = onTopBarOffsetChanged((offset) => received.push(offset));
+
+    expect(loadTopBarOffset()).toBe(DEFAULT_TOP_BAR_OFFSET);
+    expect(saveTopBarOffset(48)).toBe(48);
+    expect(storage.get(TOP_BAR_OFFSET_STORAGE_KEY)).toBe("48");
+    expect(rootStyles.get("--top-bar-offset")).toBe("48px");
+    expect(rootDataset.topBarOffset).toBe("48");
+    expect(loadTopBarOffset()).toBe(48);
+
+    expect(applyTopBarOffset(0)).toBe(0);
+    expect(rootStyles.get("--top-bar-offset")).toBe("0px");
+    expect(rootDataset.topBarOffset).toBe("0");
+
+    saveTopBarOffset(0);
+    unsubscribe();
+    expect(received).toEqual([48, 0]);
   });
 });

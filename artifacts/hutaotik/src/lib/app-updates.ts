@@ -131,9 +131,9 @@ function resolvePendingInstall(native: NativeInstalledAppInfo | null): void {
 }
 
 export function getInstalledAppVersion(): { versionCode: number; versionName: string } {
-  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "45", 10);
-  const bakedCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 45;
-  const bakedName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.29").trim() || "1.2.29";
+  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "48", 10);
+  const bakedCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 48;
+  const bakedName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.32").trim() || "1.2.32";
   const native = getNativeInstalledAppInfo();
   resolvePendingInstall(native);
   const versionCode = Math.max(native?.versionCode ?? bakedCode, getRecognizedReleaseCode(native));

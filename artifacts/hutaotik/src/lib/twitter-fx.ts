@@ -1,3 +1,5 @@
+import { createLinkedAbortController } from "@/lib/fetch-cache";
+
 export interface FxTwitterFormat {
   height: number;
   qualityLabel: string;
@@ -162,15 +164,20 @@ export async function fetchTwitterFromFx(
   const statusId = parsedUrl.pathname.match(/\/status(?:es)?\/(\d+)/i)?.[1];
   if (!statusId) throw new Error("The X post URL does not contain a valid post ID.");
 
-  const response = await fetch(`https://api.fxtwitter.com/i/status/${statusId}`, {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`The X video provider returned HTTP ${response.status}.`);
-  }
+  const { controller, cleanup } = createLinkedAbortController(signal, 8_000);
+  try {
+    const response = await fetch(`https://api.fxtwitter.com/i/status/${statusId}`, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`The X video provider returned HTTP ${response.status}.`);
+    }
 
-  const result = await response.json() as FxTwitterApiResponse;
-  return parseFxTwitterResponse(result, statusId);
+    const result = await response.json() as FxTwitterApiResponse;
+    return parseFxTwitterResponse(result, statusId);
+  } finally {
+    cleanup();
+  }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  ArrowUpDown,
   Bell,
   BellRing,
   Check,
@@ -7,6 +8,7 @@ import {
   HardDrive,
   ImagePlus,
   Loader2,
+  Menu as MenuIcon,
   Minus,
   MonitorSmartphone,
   Palette,
@@ -31,13 +33,21 @@ import {
 } from "@/lib/font-style";
 import {
   clampDisplayScale,
+  clampTopBarOffset,
   DEFAULT_DISPLAY_SCALE,
+  DEFAULT_TOP_BAR_OFFSET,
   describeDisplayScale,
+  describeTopBarOffset,
   DISPLAY_SCALE_STEP,
   loadDisplayScale,
+  loadTopBarOffset,
   MAX_DISPLAY_SCALE,
+  MAX_TOP_BAR_OFFSET,
   MIN_DISPLAY_SCALE,
+  MIN_TOP_BAR_OFFSET,
   saveDisplayScale,
+  saveTopBarOffset,
+  TOP_BAR_OFFSET_STEP,
 } from "@/lib/display-scale";
 import {
   getNotificationStatus,
@@ -168,6 +178,8 @@ export default function Settings() {
   const [uiStyleError, setUiStyleError] = useState<string | null>(null);
   const [appliedDisplayScale, setAppliedDisplayScale] = useState<number>(() => loadDisplayScale());
   const [pendingDisplayScale, setPendingDisplayScale] = useState<number>(() => loadDisplayScale());
+  const [appliedTopBarOffset, setAppliedTopBarOffset] = useState<number>(() => loadTopBarOffset());
+  const [pendingTopBarOffset, setPendingTopBarOffset] = useState<number>(() => loadTopBarOffset());
   const [fontStyle, setFontStyle] = useState<FontStyleId>(() => loadFontStyle());
   const [bounceEnabled, setBounceEnabled] = useState<boolean>(() =>
     loadBounceAnimationEnabled(),
@@ -373,6 +385,29 @@ export default function Settings() {
     });
   };
 
+  const handleApplyTopBarOffset = () => {
+    const saved = saveTopBarOffset(pendingTopBarOffset);
+    setAppliedTopBarOffset(saved);
+    setPendingTopBarOffset(saved);
+    toast({
+      title: `Top bar height set to ${saved}px`,
+      description:
+        saved === DEFAULT_TOP_BAR_OFFSET
+          ? "Restored standard top position for HutaoTik & Menu."
+          : `Moved HutaoTik & Menu buttons to ${saved}px from the top (${describeTopBarOffset(saved)}).`,
+    });
+  };
+
+  const handleResetTopBarOffset = () => {
+    const saved = saveTopBarOffset(DEFAULT_TOP_BAR_OFFSET);
+    setAppliedTopBarOffset(saved);
+    setPendingTopBarOffset(saved);
+    toast({
+      title: `Top bar height reset to ${DEFAULT_TOP_BAR_OFFSET}px`,
+      description: "Restored default top header position.",
+    });
+  };
+
   const handleSelectFontStyle = (nextFont: FontStyleId) => {
     const preset = saveFontStyle(nextFont);
     setFontStyle(preset.id);
@@ -521,13 +556,18 @@ export default function Settings() {
           <span>
             <span className="flex flex-wrap items-center gap-2 text-base font-semibold text-card-foreground">
               <MonitorSmartphone className="h-4 w-4 text-primary" />
-              Display Size
+              Display Size &amp; Top Bar
               <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary">
                 {appliedDisplayScale}%
               </span>
+              {appliedTopBarOffset !== DEFAULT_TOP_BAR_OFFSET && (
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary">
+                  Top {appliedTopBarOffset}px
+                </span>
+              )}
             </span>
             <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
-              Shrink or adjust the app layout to fit smaller or zoomed-in device screens.
+              Adjust layout scale and the vertical height of the top HutaoTik &amp; Menu buttons.
             </span>
           </span>
           <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
@@ -563,20 +603,12 @@ export default function Settings() {
                 <span className="font-syne font-bold text-foreground" style={{ fontSize: "0.95em" }}>
                   Hutao<span className="text-primary">Tik</span>
                 </span>
-                <div className="flex items-center gap-[0.3em]">
-                  <span
-                    className="rounded-md border border-border bg-background/80 px-[0.5em] py-[0.2em] font-semibold text-foreground"
-                    style={{ fontSize: "0.68em" }}
-                  >
-                    History
-                  </span>
-                  <span
-                    className="rounded-md border border-primary/40 bg-primary/15 px-[0.5em] py-[0.2em] font-semibold text-primary"
-                    style={{ fontSize: "0.68em" }}
-                  >
-                    Settings
-                  </span>
-                </div>
+                <span
+                  className="inline-flex items-center gap-[0.25em] rounded-md border border-primary/40 bg-primary/15 px-[0.55em] py-[0.2em] font-semibold text-primary"
+                  style={{ fontSize: "0.68em" }}
+                >
+                  Menu ▾
+                </span>
               </div>
               <p className="mt-[0.45em] text-muted-foreground" style={{ fontSize: "0.75em", lineHeight: 1.35 }}>
                 Sample layout text and buttons at {pendingDisplayScale}% display scale.
@@ -672,6 +704,152 @@ export default function Settings() {
                 Reset 100%
               </button>
             )}
+          </div>
+
+          {/* Top Bar Height (HutaoTik & Menu) slider */}
+          <div className="border-t border-border/70 pt-4 mt-2 space-y-3">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-card-foreground">
+                <ArrowUpDown className="h-3.5 w-3.5 text-primary" />
+                Top Buttons Height
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Move the top HutaoTik &amp; Menu buttons higher or lower to clear notches and status bars.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-background p-3 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-base font-extrabold text-foreground">
+                    {pendingTopBarOffset}px
+                  </span>
+                  <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    {describeTopBarOffset(pendingTopBarOffset)}
+                  </span>
+                </div>
+                {pendingTopBarOffset !== appliedTopBarOffset ? (
+                  <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                    Preview · Tap Apply
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-400">
+                    Active
+                  </span>
+                )}
+              </div>
+
+              {/* Live phone-top banner preview showing HutaoTik & Menu shifting vertically */}
+              <div className="relative h-28 rounded-lg border border-border/70 bg-gradient-to-b from-primary/20 via-card/85 to-background overflow-hidden">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1.5 left-1/2 -translate-x-1/2 h-1.5 w-14 rounded-full bg-white/20"
+                />
+                <div
+                  className="flex items-center justify-between px-3 transition-[padding] duration-150"
+                  style={{
+                    paddingTop: `${Math.round((pendingTopBarOffset / MAX_TOP_BAR_OFFSET) * 62 + 8)}px`,
+                  }}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-5 w-5 rounded-md border border-white/25 bg-primary/35 inline-block" />
+                    <span className="font-syne text-xs font-bold text-foreground">HutaoTik</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-lg border border-white/25 bg-black/55 px-2 py-1 text-[10px] font-semibold text-white">
+                    <MenuIcon className="h-3 w-3 text-primary" />
+                    Menu
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  aria-label="Move top buttons higher"
+                  disabled={pendingTopBarOffset <= MIN_TOP_BAR_OFFSET}
+                  onClick={() =>
+                    setPendingTopBarOffset((current) =>
+                      clampTopBarOffset(current - TOP_BAR_OFFSET_STEP),
+                    )
+                  }
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-40"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                </button>
+                <Slider
+                  aria-label="Top buttons height slider"
+                  min={MIN_TOP_BAR_OFFSET}
+                  max={MAX_TOP_BAR_OFFSET}
+                  step={TOP_BAR_OFFSET_STEP}
+                  value={[pendingTopBarOffset]}
+                  onValueChange={(values) => {
+                    const next = values[0];
+                    if (typeof next === "number") {
+                      setPendingTopBarOffset(clampTopBarOffset(next));
+                    }
+                  }}
+                  className="flex-1 py-2"
+                />
+                <button
+                  type="button"
+                  aria-label="Move top buttons lower"
+                  disabled={pendingTopBarOffset >= MAX_TOP_BAR_OFFSET}
+                  onClick={() =>
+                    setPendingTopBarOffset((current) =>
+                      clampTopBarOffset(current + TOP_BAR_OFFSET_STEP),
+                    )
+                  }
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-1 px-1">
+                {[0, 16, 32, 48, 72, 96].map((mark) => (
+                  <button
+                    key={mark}
+                    type="button"
+                    onClick={() => setPendingTopBarOffset(mark)}
+                    className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold transition-colors ${
+                      pendingTopBarOffset === mark
+                        ? "bg-primary/20 text-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {mark}px
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                data-testid="apply-top-bar-offset"
+                onClick={handleApplyTopBarOffset}
+                disabled={pendingTopBarOffset === appliedTopBarOffset}
+                className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 text-xs font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Check className="h-4 w-4" />
+                {pendingTopBarOffset === appliedTopBarOffset
+                  ? `Applied (${appliedTopBarOffset}px)`
+                  : `Apply Top Height (${pendingTopBarOffset}px)`}
+              </button>
+              {(appliedTopBarOffset !== DEFAULT_TOP_BAR_OFFSET ||
+                pendingTopBarOffset !== DEFAULT_TOP_BAR_OFFSET) && (
+                <button
+                  type="button"
+                  onClick={handleResetTopBarOffset}
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset {DEFAULT_TOP_BAR_OFFSET}px
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </details>

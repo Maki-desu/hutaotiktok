@@ -4,6 +4,7 @@ import {
   saveNotificationPreferences,
   getNotificationStatus,
   checkCustomPushNotifications,
+  shouldRequireNotificationGate,
 } from "./notifications";
 
 describe("notification preferences & bridge sync", () => {
@@ -136,5 +137,11 @@ describe("notification preferences & bridge sync", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(notifyCustomPush).not.toHaveBeenCalled();
     expect(storage.get("hutaotik_last_custom_push_id_v1")).toBeUndefined();
+  });
+
+  it("requires the notification gate whenever notifications are supported and not granted", () => {
+    expect(shouldRequireNotificationGate({ supported: true, granted: false })).toBe(true);
+    expect(shouldRequireNotificationGate({ supported: true, granted: true })).toBe(false);
+    expect(shouldRequireNotificationGate({ supported: false, granted: false })).toBe(false);
   });
 });

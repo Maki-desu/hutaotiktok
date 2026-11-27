@@ -167,62 +167,89 @@ function isFxVideoGif(video: FxTwitterVideo, downloads: FxTwitterDownload[]): bo
   return downloads.some((download) => download.url.includes("/tweet_video/"));
 }
 
-async function fetchFxTwitterVideo(url: string): Promise<{
+type FxTwitterFetchResult = {
   info: TwitterInfo;
   videos: Array<{ video: FxTwitterVideo; downloads: FxTwitterDownload[]; isGif: boolean }>;
-} | null> {
+};
+
+const TWITTER_CACHE_TTL_MS = 300_000;
+const fxTwitterCache = new Map<string, { expiresAt: number; result: FxTwitterFetchResult }>();
+const fxTwitterInFlight = new Map<string, Promise<FxTwitterFetchResult | null>>();
+
+async function fetchFxTwitterVideo(url: string): Promise<FxTwitterFetchResult | null> {
   const statusId = new URL(url).pathname.match(/\/status(?:es)?\/(\d+)/i)?.[1];
   if (!statusId) return null;
 
-  try {
-    const response = await fetch(`https://api.fxtwitter.com/i/status/${statusId}`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      logger.warn({ status: response.status, statusId }, "twitter: FXTwitter metadata request failed");
+  const cached = fxTwitterCache.get(statusId);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  const existing = fxTwitterInFlight.get(statusId);
+  if (existing) return existing;
+
+  const task = (async (): Promise<FxTwitterFetchResult | null> => {
+    try {
+      const response = await fetch(`https://api.fxtwitter.com/i/status/${statusId}`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        logger.warn({ status: response.status, statusId }, "twitter: FXTwitter metadata request failed");
+        return null;
+      }
+
+      const result = await response.json() as FxTwitterResponse;
+      if (result.code !== 200 || !result.tweet) return null;
+
+      const rawMedia =
+        result.tweet.media?.videos && result.tweet.media.videos.length > 0
+          ? result.tweet.media.videos
+          : (result.tweet.media?.all ?? []).filter(
+              (item) => item.type === "video" || item.type === "gif",
+            );
+
+      const videos = rawMedia
+        .map((video) => {
+          const downloads = getFxTwitterDownloads(video);
+          return { video, downloads, isGif: isFxVideoGif(video, downloads) };
+        })
+        .filter(({ downloads }) => downloads.length > 0);
+      if (videos.length === 0) return null;
+
+      const primaryVideo = videos[0];
+      const heights = [...new Set(primaryVideo.downloads.map((format) => format.height))]
+        .sort((a, b) => b - a);
+      const resolved: FxTwitterFetchResult = {
+        info: {
+          id: statusId,
+          title: result.tweet.text?.trim() || (primaryVideo.isGif ? "X GIF" : "X Video"),
+          thumbnail: primaryVideo.video.thumbnail_url ?? null,
+          channelName: result.tweet.author?.name ??
+            result.tweet.author?.screen_name ??
+            "X Creator",
+          duration: primaryVideo.video.duration ?? 0,
+          isGif: primaryVideo.isGif,
+          formats: heights.map((height) => ({ height, qualityLabel: `${height}p` })),
+        },
+        videos,
+      };
+      if (fxTwitterCache.size >= 250) {
+        const oldest = fxTwitterCache.keys().next().value;
+        if (oldest) fxTwitterCache.delete(oldest);
+      }
+      fxTwitterCache.set(statusId, { expiresAt: Date.now() + TWITTER_CACHE_TTL_MS, result: resolved });
+      return resolved;
+    } catch (err) {
+      logger.warn({ err, statusId }, "twitter: FXTwitter metadata request failed");
       return null;
     }
+  })();
 
-    const result = await response.json() as FxTwitterResponse;
-    if (result.code !== 200 || !result.tweet) return null;
-
-    const rawMedia =
-      result.tweet.media?.videos && result.tweet.media.videos.length > 0
-        ? result.tweet.media.videos
-        : (result.tweet.media?.all ?? []).filter(
-            (item) => item.type === "video" || item.type === "gif",
-          );
-
-    const videos = rawMedia
-      .map((video) => {
-        const downloads = getFxTwitterDownloads(video);
-        return { video, downloads, isGif: isFxVideoGif(video, downloads) };
-      })
-      .filter(({ downloads }) => downloads.length > 0);
-    if (videos.length === 0) return null;
-
-    const primaryVideo = videos[0];
-    const heights = [...new Set(primaryVideo.downloads.map((format) => format.height))]
-      .sort((a, b) => b - a);
-    return {
-      info: {
-        id: statusId,
-        title: result.tweet.text?.trim() || (primaryVideo.isGif ? "X GIF" : "X Video"),
-        thumbnail: primaryVideo.video.thumbnail_url ?? null,
-        channelName: result.tweet.author?.name ??
-          result.tweet.author?.screen_name ??
-          "X Creator",
-        duration: primaryVideo.video.duration ?? 0,
-        isGif: primaryVideo.isGif,
-        formats: heights.map((height) => ({ height, qualityLabel: `${height}p` })),
-      },
-      videos,
-    };
-  } catch (err) {
-    logger.warn({ err, statusId }, "twitter: FXTwitter metadata request failed");
-    return null;
+  fxTwitterInFlight.set(statusId, task);
+  try {
+    return await task;
+  } finally {
+    fxTwitterInFlight.delete(statusId);
   }
 }
 
@@ -239,10 +266,11 @@ export async function fetchTwitterInfo(url: string): Promise<TwitterInfo | null>
         "--dump-single-json",
         "--no-playlist",
         "--no-warnings",
-        "--socket-timeout", "20",
+        "--no-check-certificates",
+        "--socket-timeout", "12",
         url,
       ],
-      { timeout: 45_000, maxBuffer: 5 * 1024 * 1024 }
+      { timeout: 30_000, maxBuffer: 5 * 1024 * 1024 }
     );
 
     const data = JSON.parse(stdout) as YtDlpOutput;
