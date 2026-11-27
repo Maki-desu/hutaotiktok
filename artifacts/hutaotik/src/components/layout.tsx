@@ -3,7 +3,7 @@ import {
   useGetPublicSettings,
   getGetPublicSettingsQueryKey,
 } from "@workspace/api-client-react";
-import { Coffee, Copy, ExternalLink, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
+import { Coffee, Copy, ExternalLink, Lightbulb, Settings as SettingsIcon, Sparkles, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -251,7 +251,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => navigateTo("/taotools")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/taotools"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
                   : "text-white border-white/20"
@@ -268,7 +268,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => navigateTo("/updates")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/updates"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
                   : "text-white border-white/20"
@@ -281,11 +281,28 @@ export function Layout({ children }: { children: ReactNode }) {
               <span>Updates</span>
             </button>
 
+            {/* Suggestions */}
+            <button
+              type="button"
+              onClick={() => navigateTo("/suggestions")}
+              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+                location === "/suggestions"
+                  ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
+                  : "text-white border-white/20"
+              }`}
+              data-testid="nav-suggestions"
+              title="Send & View Suggestions"
+              aria-current={location === "/suggestions" ? "page" : undefined}
+            >
+              <Lightbulb className="w-3.5 h-3.5 text-primary shrink-0" />
+              <span>Suggestions</span>
+            </button>
+
             {/* Settings */}
             <button
               type="button"
               onClick={() => navigateTo("/settings")}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
+              className={`relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold cursor-pointer bg-white/10 hover:bg-white/20 border shadow-sm ${
                 location === "/settings"
                   ? "text-primary border-primary bg-primary/20 drop-shadow-[0_0_8px_rgba(249,115,22,0.55)]"
                   : "text-white border-white/20"
@@ -313,7 +330,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Admin TikTok profile card */}
       {profileUrl && publicSettings?.tiktokAvatarUrl && (
-        <div className="w-full max-w-2xl mx-auto px-4 pt-4" style={{ animation: "slide-up-fade-in 0.45s 0.1s ease both" }}>
+        <div className="w-full max-w-2xl mx-auto px-4 pt-4" style={{ animation: "slide-up-fade-in 0.45s 0.1s ease backwards" }}>
           <a
             href={profileRedirectUrl}
             onClick={handleProfileClick}

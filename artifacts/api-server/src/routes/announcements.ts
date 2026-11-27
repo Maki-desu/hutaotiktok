@@ -10,6 +10,7 @@ import {
   DeleteAnnouncementParams,
 } from "@workspace/api-zod";
 import { requireAdmin } from "../middlewares/admin";
+import { notifyAnnouncementDevices } from "../lib/push-notifications";
 
 const router: IRouter = Router();
 
@@ -73,10 +74,13 @@ router.post("/admin/announcements", requireAdmin, async (req, res): Promise<void
     .values({ content, colorType, expiresAt, isPermanent, isActive: true })
     .returning();
 
+  const push = await notifyAnnouncementDevices(announcement.id, announcement.colorType, announcement.content);
+
   res.status(201).json({
     ...announcement,
     expiresAt: announcement.expiresAt ? announcement.expiresAt.toISOString() : null,
     createdAt: announcement.createdAt.toISOString(),
+    push,
   });
 });
 

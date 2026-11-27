@@ -10,6 +10,7 @@ import { logger } from "./logger";
 const execFileAsync = promisify(execFile);
 const unlinkAsync = promisify(unlink);
 const YT_DLP = process.env.YT_DLP_PATH ?? resolve(process.cwd(), "yt-dlp");
+const FFMPEG = process.env.FFMPEG_PATH ?? "ffmpeg";
 
 const TWITTER_HOSTS = new Set([
   "x.com",
@@ -30,13 +31,16 @@ export interface TwitterInfo {
   thumbnail: string | null;
   channelName: string;
   duration: number;
+  isGif: boolean;
   formats: TwitterFormat[];
 }
 
 interface YtDlpFormat {
   height?: number;
   vcodec?: string;
+  acodec?: string;
   ext?: string;
+  url?: string;
 }
 
 interface YtDlpOutput {
@@ -58,6 +62,7 @@ interface FxTwitterVariant {
 }
 
 interface FxTwitterVideo {
+  type?: string;
   url?: string;
   thumbnail_url?: string;
   duration?: number;
@@ -77,6 +82,7 @@ interface FxTwitterResponse {
     };
     media?: {
       videos?: FxTwitterVideo[];
+      all?: FxTwitterVideo[];
     };
   };
 }
@@ -99,26 +105,6 @@ export function isTwitterUrl(input: string): boolean {
   }
 }
 
-function getFxTwitterDownloads(video: FxTwitterVideo): FxTwitterDownload[] {
-  return (video.formats ?? [])
-    .filter((format): format is FxTwitterVariant & { url: string } =>
-      format.container === "mp4" &&
-      format.codec === "h264" &&
-      typeof format.url === "string" &&
-      isTwitterMediaUrl(format.url)
-    )
-    .map((format) => {
-      const resolution = new URL(format.url).pathname.match(/\/(\d{2,4})x(\d{2,4})\//);
-      return {
-        height: resolution ? Number(resolution[2]) : video.height ?? 0,
-        bitrate: format.bitrate ?? 0,
-        url: format.url,
-      };
-    })
-    .filter((format) => format.height > 0)
-    .sort((a, b) => a.height - b.height || a.bitrate - b.bitrate);
-}
-
 function isTwitterMediaUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -128,9 +114,62 @@ function isTwitterMediaUrl(value: string): boolean {
   }
 }
 
+function isMp4Variant(format: FxTwitterVariant): format is FxTwitterVariant & { url: string } {
+  if (typeof format.url !== "string" || !isTwitterMediaUrl(format.url)) return false;
+  if (format.container === "mp4") return true;
+  try {
+    return new URL(format.url).pathname.toLowerCase().endsWith(".mp4");
+  } catch {
+    return false;
+  }
+}
+
+function getFxTwitterDownloads(video: FxTwitterVideo): FxTwitterDownload[] {
+  const mp4Formats = (video.formats ?? []).filter(isMp4Variant);
+  const h264Formats = mp4Formats.filter((format) => format.codec === "h264");
+  const sourceFormats = h264Formats.length > 0 ? h264Formats : mp4Formats;
+
+  const downloads = sourceFormats
+    .map((format) => {
+      const resolution = new URL(format.url).pathname.match(/\/(\d{2,4})x(\d{2,4})\//);
+      const height = resolution
+        ? Number(resolution[2])
+        : (video.height && video.height > 0 ? video.height : 480);
+      return {
+        height,
+        bitrate: format.bitrate ?? 0,
+        url: format.url,
+      };
+    })
+    .filter((format) => format.height > 0)
+    .sort((a, b) => a.height - b.height || a.bitrate - b.bitrate);
+
+  // Twitter GIFs (type === "gif") often only populate `video.url` (e.g. /tweet_video/*.mp4)
+  if (
+    downloads.length === 0 &&
+    typeof video.url === "string" &&
+    isTwitterMediaUrl(video.url) &&
+    new URL(video.url).pathname.toLowerCase().endsWith(".mp4")
+  ) {
+    downloads.push({
+      height: video.height && video.height > 0 ? video.height : 480,
+      bitrate: 0,
+      url: video.url,
+    });
+  }
+
+  return downloads;
+}
+
+function isFxVideoGif(video: FxTwitterVideo, downloads: FxTwitterDownload[]): boolean {
+  if (video.type?.toLowerCase() === "gif") return true;
+  if (typeof video.url === "string" && video.url.includes("/tweet_video/")) return true;
+  return downloads.some((download) => download.url.includes("/tweet_video/"));
+}
+
 async function fetchFxTwitterVideo(url: string): Promise<{
   info: TwitterInfo;
-  videos: Array<{ video: FxTwitterVideo; downloads: FxTwitterDownload[] }>;
+  videos: Array<{ video: FxTwitterVideo; downloads: FxTwitterDownload[]; isGif: boolean }>;
 } | null> {
   const statusId = new URL(url).pathname.match(/\/status(?:es)?\/(\d+)/i)?.[1];
   if (!statusId) return null;
@@ -149,8 +188,18 @@ async function fetchFxTwitterVideo(url: string): Promise<{
     const result = await response.json() as FxTwitterResponse;
     if (result.code !== 200 || !result.tweet) return null;
 
-    const videos = (result.tweet.media?.videos ?? [])
-      .map((video) => ({ video, downloads: getFxTwitterDownloads(video) }))
+    const rawMedia =
+      result.tweet.media?.videos && result.tweet.media.videos.length > 0
+        ? result.tweet.media.videos
+        : (result.tweet.media?.all ?? []).filter(
+            (item) => item.type === "video" || item.type === "gif",
+          );
+
+    const videos = rawMedia
+      .map((video) => {
+        const downloads = getFxTwitterDownloads(video);
+        return { video, downloads, isGif: isFxVideoGif(video, downloads) };
+      })
       .filter(({ downloads }) => downloads.length > 0);
     if (videos.length === 0) return null;
 
@@ -160,12 +209,13 @@ async function fetchFxTwitterVideo(url: string): Promise<{
     return {
       info: {
         id: statusId,
-        title: result.tweet.text?.trim() || "X Video",
+        title: result.tweet.text?.trim() || (primaryVideo.isGif ? "X GIF" : "X Video"),
         thumbnail: primaryVideo.video.thumbnail_url ?? null,
         channelName: result.tweet.author?.name ??
           result.tweet.author?.screen_name ??
           "X Creator",
         duration: primaryVideo.video.duration ?? 0,
+        isGif: primaryVideo.isGif,
         formats: heights.map((height) => ({ height, qualityLabel: `${height}p` })),
       },
       videos,
@@ -196,29 +246,36 @@ export async function fetchTwitterInfo(url: string): Promise<TwitterInfo | null>
     );
 
     const data = JSON.parse(stdout) as YtDlpOutput;
+    const mp4Formats = (data.formats ?? []).filter((format) => format.ext === "mp4");
+    const h264Formats = mp4Formats.filter(
+      (format) => format.vcodec?.startsWith("avc1") || format.vcodec?.startsWith("h264"),
+    );
+    const chosenFormats = h264Formats.length > 0 ? h264Formats : mp4Formats;
+
+    const isGif = chosenFormats.some(
+      (format) => typeof format.url === "string" && format.url.includes("/tweet_video/"),
+    );
+
     const heights = [...new Set(
-      (data.formats ?? [])
-        .filter((format) =>
-          format.ext === "mp4" &&
-          (format.vcodec?.startsWith("avc1") || format.vcodec?.startsWith("h264"))
-        )
+      chosenFormats
         .map((format) => format.height)
         .filter((height): height is number =>
           typeof height === "number" && Number.isInteger(height) && height > 0
         )
     )].sort((a, b) => b - a);
 
-    const formats: TwitterFormat[] = heights.map((height) => ({
-      height,
-      qualityLabel: `${height}p`,
-    }));
+    const formats: TwitterFormat[] =
+      heights.length > 0
+        ? heights.map((height) => ({ height, qualityLabel: `${height}p` }))
+        : (chosenFormats.length > 0 ? [{ height: null, qualityLabel: isGif ? "GIF" : "Best" }] : []);
 
     return {
       id: data.id ?? "",
-      title: data.title ?? "X Video",
+      title: data.title ?? (isGif ? "X GIF" : "X Video"),
       thumbnail: data.thumbnail ?? null,
       channelName: data.channel ?? data.uploader ?? data.uploader_id ?? "X Creator",
       duration: data.duration ?? 0,
+      isGif,
       formats,
     };
   } catch (err) {
@@ -254,7 +311,8 @@ export async function downloadTwitterVideo(url: string, height: number | null): 
           await response.body?.cancel();
           throw new Error(`X video provider returned HTTP ${response.status}.`);
         }
-        if (!response.headers.get("content-type")?.toLowerCase().includes("video/mp4")) {
+        const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+        if (!contentType.includes("video/mp4") && !contentType.includes("application/octet-stream")) {
           await response.body.cancel();
           throw new Error("X video provider returned a non-MP4 resource.");
         }
@@ -271,8 +329,8 @@ export async function downloadTwitterVideo(url: string, height: number | null): 
   }
 
   const formatSelector = height === null
-    ? "best[ext=mp4][vcodec^=avc1]/best[ext=mp4][vcodec^=h264]"
-    : `best[height<=${height}][ext=mp4][vcodec^=avc1]/best[height<=${height}][ext=mp4][vcodec^=h264]`;
+    ? "best[ext=mp4][vcodec^=avc1]/best[ext=mp4][vcodec^=h264]/best[ext=mp4]/best"
+    : `best[height<=${height}][ext=mp4][vcodec^=avc1]/best[height<=${height}][ext=mp4][vcodec^=h264]/best[height<=${height}][ext=mp4]/best[ext=mp4]`;
   const tmpPath = join(
     tmpdir(),
     `twitter_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`
@@ -297,5 +355,41 @@ export async function downloadTwitterVideo(url: string, height: number | null): 
     await unlinkAsync(tmpPath).catch(() => {});
     logger.error({ err, url, height }, "twitter: download error");
     throw err;
+  }
+}
+
+export async function downloadTwitterGif(
+  url: string,
+  height: number | null,
+  maxSeconds = 15,
+): Promise<string> {
+  const mp4Path = await downloadTwitterVideo(url, height);
+  const gifPath = join(
+    tmpdir(),
+    `twitter_gif_${Date.now()}_${Math.random().toString(36).slice(2)}.gif`,
+  );
+  const clampedSeconds = Math.max(1, Math.min(30, Math.round(maxSeconds)));
+
+  try {
+    await execFileAsync(
+      FFMPEG,
+      [
+        "-y",
+        "-i", mp4Path,
+        "-t", String(clampedSeconds),
+        "-vf",
+        "fps=15,scale='min(480,iw)':-2:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+        "-loop", "0",
+        gifPath,
+      ],
+      { timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+    );
+    return gifPath;
+  } catch (err) {
+    await unlinkAsync(gifPath).catch(() => {});
+    logger.error({ err, url }, "twitter: gif conversion error");
+    throw new Error("Could not convert this X post to GIF on the server.");
+  } finally {
+    await unlinkAsync(mp4Path).catch(() => {});
   }
 }

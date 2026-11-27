@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertCircle,
   CheckCircle2,
   Download,
+  Film,
   FolderCheck,
   Loader2,
 } from "lucide-react";
@@ -17,6 +19,14 @@ import {
 } from "@/lib/download-progress";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
+import {
+  convertVideoBlobToGifNative,
+  hasNativeGifConverter,
+} from "@/lib/native-media";
+import {
+  downloadUrlInBackgroundNative,
+  isNativeBackgroundDownloadAvailable,
+} from "@/lib/background-download";
 import { fetchTwitterFromFx } from "@/lib/twitter-fx";
 import { useToast } from "@/hooks/use-toast";
 
@@ -32,6 +42,7 @@ interface TwitterInfo {
   thumbnail: string | null;
   channelName: string;
   duration: number;
+  isGif?: boolean;
   formats: TwitterFormat[];
 }
 
@@ -75,7 +86,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   const [info, setInfo] = useState<TwitterInfo | null>(null);
   const [selectedHeight, setSelectedHeight] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [downloadingMode, setDownloadingMode] = useState<"mp4" | "gif" | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState>({ percent: 0 });
   const [error, setError] = useState<string | null>(null);
   const [downloadSuccessInfo, setDownloadSuccessInfo] = useState<{
@@ -83,6 +94,8 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
     folder: string;
   } | null>(null);
   const { toast } = useToast();
+
+  const downloading = downloadingMode !== null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -120,7 +133,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : "Could not fetch X video information.");
+        setError(cause instanceof Error ? cause.message : "Could not fetch X video or GIF.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -129,91 +142,169 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
     return () => controller.abort();
   }, [url]);
 
-  const handleDownload = async () => {
+  const fetchSourceMp4Blob = async (
+    safeTitle: string,
+    selectedFormat: TwitterFormat | undefined,
+    endPercent: number,
+  ): Promise<{ blob: Blob; usedApiUrl: string | null }> => {
+    const quality = selectedHeight === null ? "best" : String(selectedHeight);
+    const apiDownloadUrl = apiUrl(
+      `/api/twitter/download?url=${encodeURIComponent(url)}&quality=${encodeURIComponent(quality)}&title=${encodeURIComponent(safeTitle)}`,
+    );
+    let downloadUrl = selectedFormat?.downloadUrl ?? apiDownloadUrl;
+
+    const requestOptions = {
+      referrerPolicy: "no-referrer" as ReferrerPolicy,
+      signal: AbortSignal.timeout(120_000),
+    };
+    let response: Response | null = null;
+    if (selectedFormat?.downloadUrl) {
+      response = await fetch(downloadUrl, requestOptions);
+    } else {
+      try {
+        response = await fetch(downloadUrl, requestOptions);
+      } catch (cause) {
+        if (cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError")) {
+          throw cause;
+        }
+      }
+      const contentType = response?.headers.get("content-type") ?? "";
+      if (!response?.ok || contentType.includes("text/html") || contentType.includes("application/json")) {
+        await response?.body?.cancel();
+        const fallbackInfo = await fetchTwitterFromFx(url);
+        const fallbackFormat =
+          fallbackInfo.formats.find((format) => format.height === selectedHeight) ??
+          fallbackInfo.formats[0];
+        if (!fallbackFormat) throw new Error("No downloadable video or GIF format was found for this X post.");
+        downloadUrl = fallbackFormat.downloadUrl;
+        response = await fetch(downloadUrl, requestOptions);
+      }
+    }
+
+    if (!response) throw new Error("The X provider did not return a response.");
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`X download failed (HTTP ${response.status}).`);
+    }
+
+    const blob = await fetchBlobWithProgress(response, setDownloadProgress, {
+      startPercent: 2,
+      endPercent,
+      status: info?.isGif ? "Downloading X GIF…" : "Downloading X video…",
+    });
+    if (blob.size === 0) throw new Error("The server returned an empty file.");
+    if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
+      throw new Error("The download provider returned an error page instead of media.");
+    }
+
+    return {
+      blob,
+      usedApiUrl: downloadUrl === apiDownloadUrl ? downloadUrl : null,
+    };
+  };
+
+  const handleDownloadMp4 = async () => {
     if (!info) return;
     if (!folderName) {
       onOpenFolderPicker?.();
       return;
     }
 
-    setDownloading(true);
-    setDownloadProgress({ percent: 0, status: "Connecting to X video…" });
+    setDownloadingMode("mp4");
+    setDownloadProgress({ percent: 0, status: "Connecting to X…" });
     setDownloadSuccessInfo(null);
-    const safeTitle = (info.title || "X Video")
+    const safeTitle = (info.title || (info.isGif ? "X GIF" : "X Video"))
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
       .trim()
       .substring(0, 60) || "X Video";
     const selectedFormat = info.formats.find((format) => format.height === selectedHeight);
-    const quality = selectedHeight === null ? "best" : String(selectedHeight);
     const qualityLabel = selectedFormat?.qualityLabel ?? "Best available";
     const filename = `${safeTitle}${selectedHeight === null ? "" : ` - ${selectedHeight}p`}.mp4`;
-    const apiDownloadUrl = apiUrl(
-      `/api/twitter/download?url=${encodeURIComponent(url)}&quality=${encodeURIComponent(quality)}&title=${encodeURIComponent(safeTitle)}`
-    );
-    let downloadUrl = selectedFormat?.downloadUrl ?? apiDownloadUrl;
 
     try {
-      const requestOptions = {
-        referrerPolicy: "no-referrer" as ReferrerPolicy,
-        signal: AbortSignal.timeout(120_000),
-      };
-      let response: Response | null = null;
-      if (selectedFormat?.downloadUrl) {
-        response = await fetch(downloadUrl, requestOptions);
-      } else {
-        response = null;
-        try {
-          response = await fetch(downloadUrl, requestOptions);
-        } catch (cause) {
-          if (cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError")) {
-            throw cause;
+      let usedApiUrl: string | null = null;
+      if (isNativeBackgroundDownloadAvailable()) {
+        const quality = selectedHeight === null ? "best" : String(selectedHeight);
+        const apiDownloadUrl = apiUrl(
+          `/api/twitter/download?url=${encodeURIComponent(url)}&quality=${encodeURIComponent(quality)}&title=${encodeURIComponent(safeTitle)}`,
+        );
+        let targetUrl = selectedFormat?.downloadUrl ?? apiDownloadUrl;
+        let nativeSucceeded = false;
+
+        if (targetUrl.startsWith("https://")) {
+          try {
+            await downloadUrlInBackgroundNative({
+              url: targetUrl,
+              filename,
+              folderName,
+              title: `X · ${safeTitle}`,
+              mimeType: "video/mp4",
+              onProgress: setDownloadProgress,
+            });
+            usedApiUrl = targetUrl === apiDownloadUrl ? apiDownloadUrl : null;
+            nativeSucceeded = true;
+          } catch (firstErr) {
+            if (
+              firstErr instanceof Error &&
+              /cancelled/i.test(firstErr.message)
+            ) {
+              throw firstErr;
+            }
+            if (!selectedFormat?.downloadUrl) {
+              const fallbackInfo = await fetchTwitterFromFx(url);
+              const fallbackFormat =
+                fallbackInfo.formats.find((format) => format.height === selectedHeight) ??
+                fallbackInfo.formats[0];
+              if (fallbackFormat?.downloadUrl?.startsWith("https://")) {
+                await downloadUrlInBackgroundNative({
+                  url: fallbackFormat.downloadUrl,
+                  filename,
+                  folderName,
+                  title: `X · ${safeTitle}`,
+                  mimeType: "video/mp4",
+                  onProgress: setDownloadProgress,
+                });
+                nativeSucceeded = true;
+              } else {
+                throw firstErr;
+              }
+            } else {
+              throw firstErr;
+            }
           }
         }
-        const contentType = response?.headers.get("content-type") ?? "";
-        if (!response?.ok || contentType.includes("text/html") || contentType.includes("application/json")) {
-          await response?.body?.cancel();
-          const fallbackInfo = await fetchTwitterFromFx(url);
-          const fallbackFormat = fallbackInfo.formats.find((format) => format.height === selectedHeight) ??
-            fallbackInfo.formats[0];
-          if (!fallbackFormat) throw new Error("No downloadable video format was found for this X post.");
-          downloadUrl = fallbackFormat.downloadUrl;
-          response = await fetch(downloadUrl, requestOptions);
-        }
-      }
-      if (!response) throw new Error("The X video provider did not return a response.");
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error(`X video download failed (HTTP ${response.status}).`);
-      }
 
-      const blob = await fetchBlobWithProgress(response, setDownloadProgress, {
-        startPercent: 2,
-        endPercent: 88,
-        status: "Downloading X video…",
-      });
-      if (blob.size === 0) throw new Error("The server returned an empty video file.");
-      if (blob.type.includes("text/html") || blob.type.includes("application/json")) {
-        throw new Error("The download provider returned an error page instead of the X video.");
+        if (!nativeSucceeded) {
+          const { blob, usedApiUrl: fallbackUrl } = await fetchSourceMp4Blob(safeTitle, selectedFormat, 88);
+          usedApiUrl = fallbackUrl;
+          await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+            startPercent: 88,
+            endPercent: 100,
+          });
+        }
+      } else {
+        const { blob, usedApiUrl: fetchedApiUrl } = await fetchSourceMp4Blob(safeTitle, selectedFormat, 88);
+        usedApiUrl = fetchedApiUrl;
+        await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+          startPercent: 88,
+          endPercent: 100,
+        });
       }
-      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
-        startPercent: 88,
-        endPercent: 100,
-      });
 
       saveLocalHistoryRecord({
         title: info.title || "X Video",
         author: info.channelName,
         authorUsername: info.channelName,
         thumbnail: info.thumbnail,
-        quality: qualityLabel,
+        quality: info.isGif ? `${qualityLabel} MP4` : qualityLabel,
         sourceUrl: url,
-        downloadUrl: downloadUrl === apiDownloadUrl ? downloadUrl : url,
+        downloadUrl: usedApiUrl ?? url,
         platform: "twitter",
       });
       setDownloadSuccessInfo({ filename, folder: folderName });
       toast({
-        title: "X Video Download Complete!",
-        description: `Saved ${filename} inside ${folderName}`,
+        title: "X Download Complete!",
+        description: `Saved ${filename} to ${folderName}`,
       });
     } catch (cause: unknown) {
       toast({
@@ -222,7 +313,97 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
         variant: "destructive",
       });
     } finally {
-      setDownloading(false);
+      setDownloadingMode(null);
+      setDownloadProgress({ percent: 0 });
+    }
+  };
+
+  const handleDownloadGif = async () => {
+    if (!info) return;
+    if (!folderName) {
+      onOpenFolderPicker?.();
+      return;
+    }
+
+    setDownloadingMode("gif");
+    setDownloadProgress({ percent: 0, status: "Preparing animated GIF…" });
+    setDownloadSuccessInfo(null);
+
+    const safeTitle = (info.title || "X GIF")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .trim()
+      .substring(0, 60) || "X GIF";
+    const selectedFormat = info.formats.find((format) => format.height === selectedHeight);
+    const filename = `${safeTitle}.gif`;
+
+    try {
+      let savedFilename = filename;
+
+      if (hasNativeGifConverter()) {
+        // Android APK: download source MP4 directly and convert to crisp looping GIF via bundled FFmpeg
+        const { blob } = await fetchSourceMp4Blob(safeTitle, selectedFormat, 52);
+        const result = await convertVideoBlobToGifNative(
+          blob,
+          filename,
+          folderName,
+          15,
+          setDownloadProgress,
+          55,
+        );
+        savedFilename = result.filename;
+      } else {
+        // Web fallback: request server-side GIF conversion
+        const quality = selectedHeight === null ? "best" : String(selectedHeight);
+        const gifUrl = apiUrl(
+          `/api/twitter/gif?url=${encodeURIComponent(url)}&quality=${encodeURIComponent(quality)}&title=${encodeURIComponent(safeTitle)}`,
+        );
+        setDownloadProgress({ percent: 15, status: "Converting X clip to GIF on server…" });
+        const response = await fetch(gifUrl, { signal: AbortSignal.timeout(180_000) });
+        if (!response.ok) {
+          let errMsg = `GIF conversion failed (HTTP ${response.status}).`;
+          try {
+            const errJson = (await response.json()) as { error?: string };
+            if (errJson.error) errMsg = errJson.error;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(errMsg);
+        }
+        const gifBlob = await fetchBlobWithProgress(response, setDownloadProgress, {
+          startPercent: 20,
+          endPercent: 88,
+          status: "Downloading animated GIF…",
+        });
+        if (gifBlob.size === 0) throw new Error("The server returned an empty GIF file.");
+        await saveBlobToDevice(gifBlob, filename, folderName, setDownloadProgress, {
+          startPercent: 88,
+          endPercent: 100,
+        });
+      }
+
+      saveLocalHistoryRecord({
+        title: info.title || "X GIF",
+        author: info.channelName,
+        authorUsername: info.channelName,
+        thumbnail: info.thumbnail,
+        quality: "GIF",
+        sourceUrl: url,
+        downloadUrl: url,
+        platform: "twitter",
+      });
+      setDownloadSuccessInfo({ filename: savedFilename, folder: folderName });
+      toast({
+        title: "X GIF Saved!",
+        description: `Saved ${savedFilename} inside ${folderName}`,
+      });
+    } catch (cause: unknown) {
+      toast({
+        title: "GIF Download Failed",
+        description: cause instanceof Error ? cause.message : "Could not convert this X post to GIF.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingMode(null);
       setDownloadProgress({ percent: 0 });
     }
   };
@@ -254,6 +435,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
   if (!info) return null;
 
   const selectedFormat = info.formats.find((format) => format.height === selectedHeight);
+  const isGifPost = Boolean(info.isGif);
 
   return (
     <div className="animate-card-bounce-in bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
@@ -266,6 +448,11 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
               <SiX className="w-8 h-8 text-foreground/30" />
             </div>
           )}
+          {isGifPost && (
+            <div className="absolute top-1 left-1 bg-primary text-primary-foreground text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded shadow">
+              GIF
+            </div>
+          )}
           {info.duration > 0 && (
             <div className="absolute bottom-1 right-1 bg-black/70 text-white text-[9px] font-mono px-1 py-px rounded">
               {formatDuration(info.duration)}
@@ -273,7 +460,14 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
           )}
         </div>
         <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-          <p className="text-sm font-semibold leading-snug line-clamp-2">{info.title}</p>
+          <div className="flex items-start gap-1.5">
+            <p className="text-sm font-semibold leading-snug line-clamp-2 flex-1">{info.title}</p>
+            {isGifPost && (
+              <Badge className="shrink-0 bg-primary/15 text-primary border border-primary/30 text-[10px] font-bold">
+                X GIF
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <SiX className="w-3 h-3 shrink-0" />
             {info.channelName}
@@ -281,11 +475,11 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
         </div>
       </div>
 
-      <div className="px-4 pb-3">
-        <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2 font-semibold">
-          Video Quality
-        </p>
-        {info.formats.length > 0 ? (
+      {info.formats.length > 0 && (
+        <div className="px-4 pb-3">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2 font-semibold">
+            {isGifPost ? "Source Quality" : "Video Quality"}
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {info.formats.map((format) => (
               <button
@@ -303,14 +497,16 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
               </button>
             ))}
           </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">No downloadable video formats were found.</p>
-        )}
-      </div>
+        </div>
+      )}
 
       {downloading && (
         <DownloadProgressCard
-          title={`Downloading X video to ${folderName}…`}
+          title={
+            downloadingMode === "gif"
+              ? `Creating animated GIF in ${folderName}…`
+              : `Downloading X video to ${folderName}…`
+          }
           progress={downloadProgress}
           className="px-4 pb-3"
         />
@@ -330,7 +526,7 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
         </div>
       )}
 
-      <div className="px-4 pb-4">
+      <div className="px-4 pb-4 space-y-2">
         {!folderName ? (
           <Button
             type="button"
@@ -339,25 +535,88 @@ export function TwitterSection({ url, folderName, onOpenFolderPicker }: Props) {
           >
             <span className="min-w-0">Select a download location</span>
           </Button>
+        ) : isGifPost ? (
+          <>
+            <Button
+              type="button"
+              onClick={handleDownloadGif}
+              disabled={!selectedFormat || downloading}
+              className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
+            >
+              {downloadingMode === "gif" ? (
+                <>
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                  <span className="min-w-0 truncate">Converting GIF… {downloadProgress.percent}%</span>
+                </>
+              ) : (
+                <>
+                  <Film className="w-4 h-4 shrink-0" />
+                  <span className="min-w-0 truncate">Download GIF (.gif) to {folderName}</span>
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleDownloadMp4}
+              disabled={!selectedFormat || downloading}
+              className="w-full max-w-full overflow-hidden h-10 px-4 font-semibold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2"
+            >
+              {downloadingMode === "mp4" ? (
+                <>
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                  <span className="min-w-0 truncate">Downloading MP4… {downloadProgress.percent}%</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 shrink-0" />
+                  <span className="min-w-0 truncate">Save Original as MP4 ({selectedFormat?.qualityLabel ?? "Best"})</span>
+                </>
+              )}
+            </Button>
+          </>
         ) : (
-          <Button
-            type="button"
-            onClick={handleDownload}
-            disabled={!selectedFormat || downloading}
-            className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
-          >
-            {downloading ? (
-              <>
-                <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4 shrink-0" />
-                <span className="min-w-0 truncate">Save {selectedFormat?.qualityLabel ?? "X Video"} to {folderName}</span>
-              </>
-            )}
-          </Button>
+          <>
+            <Button
+              type="button"
+              onClick={handleDownloadMp4}
+              disabled={!selectedFormat || downloading}
+              className="w-full max-w-full overflow-hidden h-11 px-4 font-bold text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 flex items-center justify-center gap-2"
+            >
+              {downloadingMode === "mp4" ? (
+                <>
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                  <span className="min-w-0 truncate">Downloading… {downloadProgress.percent}%</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 shrink-0" />
+                  <span className="min-w-0 truncate">Save {selectedFormat?.qualityLabel ?? "X Video"} to {folderName}</span>
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleDownloadGif}
+              disabled={!selectedFormat || downloading}
+              className="w-full max-w-full overflow-hidden h-10 px-4 font-semibold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2"
+            >
+              {downloadingMode === "gif" ? (
+                <>
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                  <span className="min-w-0 truncate">Creating GIF… {downloadProgress.percent}%</span>
+                </>
+              ) : (
+                <>
+                  <Film className="w-4 h-4 shrink-0 text-primary" />
+                  <span className="min-w-0 truncate">
+                    Save as Animated GIF (.gif){info.duration > 15 ? " • first 15s" : ""}
+                  </span>
+                </>
+              )}
+            </Button>
+          </>
         )}
       </div>
     </div>

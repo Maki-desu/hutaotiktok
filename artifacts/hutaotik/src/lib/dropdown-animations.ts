@@ -34,6 +34,7 @@ export function loadDropdownAnimation(): DropdownAnimation {
 
 export function saveDropdownAnimation(animation: DropdownAnimation): void {
   document.documentElement.dataset.dropdownAnimation = animation;
+  localStorage.setItem(BOUNCY_DEFAULT_MIGRATION_KEY, "1");
   localStorage.setItem(STORAGE_KEY, animation);
 }
 

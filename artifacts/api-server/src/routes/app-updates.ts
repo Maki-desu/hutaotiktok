@@ -1,8 +1,10 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
+import crypto from "crypto";
+import fs from "fs";
+import https from "https";
+import multer from "multer";
 import path from "path";
-import { desc, inArray, eq, sql } from "drizzle-orm";
-import { cert, getApps, initializeApp } from "firebase-admin/app";
-import { getMessaging } from "firebase-admin/messaging";
+import { desc, eq, sql } from "drizzle-orm";
 import {
   db,
   appReleasesTable,
@@ -12,19 +14,281 @@ import {
 } from "@workspace/db";
 import { requireAdmin } from "../middlewares/admin";
 import { logger } from "../lib/logger";
+import { notifyAppUpdateDevices, type PushResult } from "../lib/push-notifications";
 
 const router: IRouter = Router();
-const DEFAULT_APP_VERSION_CODE = 32;
-const DEFAULT_APP_VERSION_NAME = "1.2.16";
+const DEFAULT_APP_VERSION_CODE = 36;
+const DEFAULT_APP_VERSION_NAME = "1.2.20";
+const MAX_APK_UPLOAD_BYTES = 250 * 1024 * 1024;
 const APK_STORAGE_DIR = path.resolve(
   process.env.APK_STORAGE_DIR || path.join(process.cwd(), "uploads", "app-releases"),
 );
+if (!fs.existsSync(APK_STORAGE_DIR)) {
+  fs.mkdirSync(APK_STORAGE_DIR, { recursive: true });
+}
 
-type PushResult =
-  | { status: "sent"; deviceCount: number; deliveredCount: number }
-  | { status: "partial" | "failed"; deviceCount: number; deliveredCount: number }
-  | { status: "not_configured"; deviceCount: number; deliveredCount: 0 }
-  | { status: "skipped"; deviceCount: number; deliveredCount: 0 };
+const apkStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    try {
+      if (!fs.existsSync(APK_STORAGE_DIR)) {
+        fs.mkdirSync(APK_STORAGE_DIR, { recursive: true });
+      }
+      cb(null, APK_STORAGE_DIR);
+    } catch (err) {
+      cb(
+        err instanceof Error ? err : new Error("Could not prepare APK storage directory."),
+        APK_STORAGE_DIR,
+      );
+    }
+  },
+  filename(_req, _file, cb) {
+    cb(null, `hutaotik-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.apk`);
+  },
+});
+
+const apkUpload = multer({
+  storage: apkStorage,
+  limits: {
+    fileSize: MAX_APK_UPLOAD_BYTES,
+    files: 1,
+  },
+  fileFilter(_req, file, cb) {
+    const lowerName = (file.originalname || "").toLowerCase();
+    const lowerMime = (file.mimetype || "").toLowerCase();
+    const allowed =
+      lowerName.endsWith(".apk") ||
+      lowerMime === "application/vnd.android.package-archive" ||
+      lowerMime === "application/octet-stream" ||
+      lowerMime === "application/zip";
+    if (!allowed) {
+      cb(new Error("Please upload a valid Android .apk file."));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+const handleOptionalApkUpload: RequestHandler = (req, res, next) => {
+  if (!req.is("multipart/form-data")) {
+    next();
+    return;
+  }
+  apkUpload.single("apk")(req, res, (err: unknown) => {
+    if (!err) {
+      next();
+      return;
+    }
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ error: "APK file is too large (maximum size is 250 MB)." });
+        return;
+      }
+      res.status(400).json({ error: `APK upload error: ${err.message}` });
+      return;
+    }
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "Could not process uploaded APK file.",
+    });
+  });
+};
+
+async function safeUnlink(filePath: string | null | undefined): Promise<void> {
+  if (!filePath) return;
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {
+    /* ignore missing file */
+  }
+}
+
+async function isZipMagic(filePath: string): Promise<boolean> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const header = Buffer.alloc(4);
+    const { bytesRead } = await handle.read(header, 0, 4, 0);
+    return (
+      bytesRead === 4 &&
+      header[0] === 0x50 &&
+      header[1] === 0x4b &&
+      header[2] === 0x03 &&
+      header[3] === 0x04
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
+async function computeFileSha256(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
+}
+
+function streamFileToHttpsUrl(
+  targetUrl: string,
+  filePath: string,
+  fileSize: number,
+  headers: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(targetUrl);
+    const req = https.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: "POST",
+        headers: {
+          ...headers,
+          "Content-Length": String(fileSize),
+        },
+        timeout: 180_000,
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          let parsedBody: Record<string, unknown> = {};
+          try {
+            const raw: unknown = JSON.parse(body);
+            if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+              parsedBody = raw as Record<string, unknown>;
+            }
+          } catch {
+            /* ignore non-json error body */
+          }
+          if (status >= 200 && status < 300) {
+            resolve(parsedBody);
+          } else {
+            const msg =
+              typeof parsedBody.message === "string"
+                ? parsedBody.message
+                : `HTTP ${status}`;
+            reject(new Error(`GitHub asset upload failed (${msg}).`));
+          }
+        });
+      },
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error("GitHub asset upload timed out."));
+    });
+    req.on("error", reject);
+
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", (err) => {
+      req.destroy(err);
+      reject(err);
+    });
+    stream.pipe(req);
+  });
+}
+
+async function uploadApkToGitHubRelease(params: {
+  filePath: string;
+  fileSize: number;
+  versionName: string;
+  title: string;
+  changelog: string;
+}): Promise<string> {
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (!token) {
+    throw new Error("GITHUB_TOKEN is not configured.");
+  }
+  const repo = process.env.GITHUB_REPO?.trim() || "Maki-desu/hutaotiktok";
+  const safeVersion = params.versionName.replace(/[^0-9A-Za-z._-]/g, "-");
+  const tag = safeVersion.startsWith("v") ? safeVersion : `v${safeVersion}`;
+  const assetName = `Hutaotik-${tag}.apk`;
+
+  const ghHeaders: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "Hutaotik-API",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  type GitHubReleasePayload = {
+    id?: number;
+    upload_url?: string;
+    assets?: Array<{ id: number; name: string }>;
+  };
+
+  let releaseData: GitHubReleasePayload | null = null;
+
+  const existingResp = await fetch(
+    `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`,
+    { headers: ghHeaders },
+  );
+
+  if (existingResp.ok) {
+    releaseData = (await existingResp.json()) as GitHubReleasePayload;
+  } else if (existingResp.status === 404) {
+    const createResp = await fetch(`https://api.github.com/repos/${repo}/releases`, {
+      method: "POST",
+      headers: {
+        ...ghHeaders,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tag_name: tag,
+        name: params.title ? `HutaoTik ${tag} — ${params.title}` : `HutaoTik ${tag}`,
+        body: params.changelog,
+        draft: false,
+        prerelease: false,
+      }),
+    });
+    if (!createResp.ok) {
+      const errText = await createResp.text().catch(() => "");
+      throw new Error(`Could not create GitHub release ${tag} (HTTP ${createResp.status}): ${errText.slice(0, 160)}`);
+    }
+    releaseData = (await createResp.json()) as GitHubReleasePayload;
+  } else {
+    throw new Error(`Could not query GitHub releases (HTTP ${existingResp.status}).`);
+  }
+
+  const rawUploadUrl = releaseData?.upload_url;
+  if (!rawUploadUrl) {
+    throw new Error("GitHub release did not return an upload URL.");
+  }
+
+  const existingAsset = releaseData?.assets?.find((asset) => asset.name === assetName);
+  if (existingAsset) {
+    await fetch(`https://api.github.com/repos/${repo}/releases/assets/${existingAsset.id}`, {
+      method: "DELETE",
+      headers: ghHeaders,
+    }).catch(() => {});
+  }
+
+  const uploadBase = rawUploadUrl.replace(/\{[^}]*\}$/, "");
+  const uploadTarget = `${uploadBase}?name=${encodeURIComponent(assetName)}`;
+  const uploadedAsset = await streamFileToHttpsUrl(uploadTarget, params.filePath, params.fileSize, {
+    ...ghHeaders,
+    "Content-Type": "application/vnd.android.package-archive",
+  });
+
+  const downloadUrl = uploadedAsset.browser_download_url;
+  if (typeof downloadUrl !== "string" || !downloadUrl.startsWith("https://")) {
+    throw new Error("GitHub asset upload did not return a download URL.");
+  }
+  return downloadUrl;
+}
+
+async function notifyDevices(
+  versionCode: number,
+  versionName: string,
+  title?: string,
+): Promise<PushResult> {
+  return notifyAppUpdateDevices(versionCode, versionName, title);
+}
 
 function serializeRelease(release: AppRelease, currentVersionCode?: number | null) {
   const forcedByMinVersion =
@@ -39,6 +303,7 @@ function serializeRelease(release: AppRelease, currentVersionCode?: number | nul
     title: release.title || "",
     changelog: release.changelog,
     downloadUrl: release.downloadUrl ?? `/api/app-updates/${release.id}/download`,
+    hasUploadedApk: Boolean(release.fileName),
     fileSize: release.fileSize,
     sha256: release.sha256,
     isMandatory: release.isMandatory || forcedByMinVersion,
@@ -94,97 +359,12 @@ function bumpPatchVersion(previousVersionName: string): string | null {
 
 function pushWarning(push: PushResult): string | undefined {
   if (push.status === "not_configured") {
-    return "Release is live in the database. Users will see the update prompt when they open HutaoTik (configure FIREBASE_SERVICE_ACCOUNT_JSON to also send background push alerts).";
+    return "Release is live in the database. HutaoTik devices will notify users automatically via background sync and on app open (optionally add FIREBASE_SERVICE_ACCOUNT_JSON for instant FCM push).";
   }
   if (push.status === "failed" || push.status === "partial") {
-    return "Release is live in the database, but not all background push alerts were delivered.";
+    return "Release is live in the database, but not all instant FCM push alerts were delivered.";
   }
   return undefined;
-}
-
-async function notifyDevices(
-  versionCode: number,
-  versionName: string,
-  title?: string,
-): Promise<PushResult> {
-  let deviceCount = 0;
-  let deliveredCount = 0;
-  try {
-    const tokens = await db
-      .select({ token: appUpdateDevicesTable.token })
-      .from(appUpdateDevicesTable);
-    deviceCount = tokens.length;
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    if (!serviceAccountJson) return { status: "not_configured", deviceCount, deliveredCount: 0 };
-    if (deviceCount === 0) return { status: "sent", deviceCount: 0, deliveredCount: 0 };
-
-    const serviceAccount = JSON.parse(serviceAccountJson);
-    const app =
-      getApps().find((existingApp) => existingApp.name === "hutaotik-app-updates") ??
-      initializeApp(
-        { credential: cert(serviceAccount) },
-        "hutaotik-app-updates",
-      );
-    const messaging = getMessaging(app);
-    const invalidTokens: string[] = [];
-
-    const notificationTitle = title?.trim()
-      ? `HutaoTik ${versionName} — ${title.trim()}`
-      : "HutaoTik update available";
-
-    for (let index = 0; index < tokens.length; index += 500) {
-      const batch = tokens.slice(index, index + 500);
-      const result = await messaging.sendEachForMulticast({
-        tokens: batch.map(({ token }) => token),
-        notification: {
-          title: notificationTitle,
-          body: `Version ${versionName} is ready to install.`,
-        },
-        data: {
-          type: "app_update",
-          versionCode: String(versionCode),
-        },
-        android: {
-          notification: { channelId: "hutaotik_updates" },
-        },
-      });
-      deliveredCount += result.successCount;
-      const failedCodes = result.responses.flatMap((response) =>
-        response.success ? [] : [response.error?.code ?? "unknown"],
-      );
-      if (failedCodes.length > 0) {
-        logger.warn({ failedCodes }, "Some Hutaotik update push alerts were rejected.");
-      }
-
-      result.responses.forEach((response, responseIndex) => {
-        if (
-          !response.success &&
-          (response.error?.code === "messaging/registration-token-not-registered" ||
-            response.error?.code === "messaging/invalid-registration-token")
-        ) {
-          invalidTokens.push(batch[responseIndex].token);
-        }
-      });
-    }
-
-    if (invalidTokens.length > 0) {
-      await db
-        .delete(appUpdateDevicesTable)
-        .where(inArray(appUpdateDevicesTable.token, invalidTokens));
-    }
-    return {
-      status: deliveredCount === deviceCount ? "sent" : deliveredCount > 0 ? "partial" : "failed",
-      deviceCount,
-      deliveredCount,
-    };
-  } catch (error) {
-    logger.error({ err: error }, "Could not send Hutaotik update push notifications.");
-    return {
-      status: deliveredCount > 0 ? "partial" : "failed",
-      deviceCount,
-      deliveredCount,
-    };
-  }
 }
 
 /* ── Public Release Endpoints ──────────────────────────────── */
@@ -249,10 +429,27 @@ router.get("/app-updates/:id/download", async (req, res): Promise<void> => {
     return;
   }
 
-  res.download(
-    path.join(APK_STORAGE_DIR, release.fileName),
-    `Hutaotik-${release.versionName}.apk`,
-  );
+  const apkPath = path.join(APK_STORAGE_DIR, path.basename(release.fileName));
+  if (!fs.existsSync(apkPath)) {
+    res.status(404).json({
+      error:
+        "The uploaded APK file is no longer on this server's temporary disk. Re-upload it in Hutaotik Admin or set GITHUB_TOKEN on Render for permanent hosting.",
+    });
+    return;
+  }
+
+  void db
+    .update(appReleasesTable)
+    .set({
+      downloadCount: sql`${appReleasesTable.downloadCount} + 1`,
+    })
+    .where(eq(appReleasesTable.id, id))
+    .catch((err) => {
+      logger.warn({ err, releaseId: id }, "Could not increment APK download count.");
+    });
+
+  res.setHeader("Content-Type", "application/vnd.android.package-archive");
+  res.download(apkPath, `Hutaotik-${release.versionName}.apk`);
 });
 
 router.post("/app-updates/:id/track-download", async (req, res): Promise<void> => {
@@ -416,6 +613,7 @@ router.get("/admin/app-updates", requireAdmin, async (_req, res): Promise<void> 
       activeLast30Days,
       pushTokenCount: pushTokens.length,
       firebaseConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON),
+      githubUploadConfigured: Boolean(process.env.GITHUB_TOKEN?.trim()),
       latestActiveVersionCode,
       latestActiveVersionName: latestActiveRelease?.versionName ?? null,
       upToDateCount,
@@ -429,153 +627,253 @@ router.get("/admin/app-updates", requireAdmin, async (_req, res): Promise<void> 
 router.post(
   "/admin/app-updates",
   requireAdmin,
+  handleOptionalApkUpload,
   async (req, res): Promise<void> => {
-    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
-    const changelog = req.body?.changelog;
-    const isMandatory = req.body?.isMandatory === true || req.body?.isMandatory === "true";
-    const isActive = req.body?.isActive !== false && req.body?.isActive !== "false";
-    const sendPush = req.body?.sendPush !== false && req.body?.sendPush !== "false";
+    const uploadedFile = req.file;
+    let shouldCleanupUpload = Boolean(uploadedFile);
+    const cleanupUploadedFile = async () => {
+      if (shouldCleanupUpload && uploadedFile?.path) {
+        shouldCleanupUpload = false;
+        await safeUnlink(uploadedFile.path);
+      }
+    };
 
-    if (
-      title.length > 120 ||
-      typeof changelog !== "string" ||
-      changelog.trim().length === 0 ||
-      changelog.length > 5000
-    ) {
-      res.status(400).json({ error: "Enter a valid release announcement (1–5000 characters)." });
-      return;
-    }
+    try {
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      const changelog = req.body?.changelog;
+      const isMandatory = req.body?.isMandatory === true || req.body?.isMandatory === "true";
+      const isActive = req.body?.isActive !== false && req.body?.isActive !== "false";
+      const sendPush = req.body?.sendPush !== false && req.body?.sendPush !== "false";
 
-    const urlCheck = validateHttpsDownloadUrl(req.body?.downloadUrl);
-    if (urlCheck.error || !urlCheck.url) {
-      res.status(400).json({ error: urlCheck.error ?? "Invalid HTTPS download URL." });
-      return;
-    }
-
-    const shaCheck = validateOptionalSha256(req.body?.sha256);
-    if (shaCheck.error) {
-      res.status(400).json({ error: shaCheck.error });
-      return;
-    }
-
-    let minSupportedVersionCode: number | null = null;
-    if (
-      req.body?.minSupportedVersionCode !== undefined &&
-      req.body?.minSupportedVersionCode !== null &&
-      req.body?.minSupportedVersionCode !== ""
-    ) {
-      const parsedMin = Number(req.body.minSupportedVersionCode);
-      if (!Number.isSafeInteger(parsedMin) || parsedMin < 1 || parsedMin > 2_147_483_647) {
-        res.status(400).json({ error: "Minimum supported version code must be a positive integer." });
+      if (
+        title.length > 120 ||
+        typeof changelog !== "string" ||
+        changelog.trim().length === 0 ||
+        changelog.length > 5000
+      ) {
+        await cleanupUploadedFile();
+        res.status(400).json({ error: "Enter a valid release announcement (1–5000 characters)." });
         return;
       }
-      minSupportedVersionCode = parsedMin;
-    }
 
-    let fileSize: number | null = null;
-    if (
-      req.body?.fileSize !== undefined &&
-      req.body?.fileSize !== null &&
-      req.body?.fileSize !== ""
-    ) {
-      const parsedSize = Number(req.body.fileSize);
-      if (!Number.isSafeInteger(parsedSize) || parsedSize < 1) {
-        res.status(400).json({ error: "File size must be a positive integer in bytes." });
-        return;
-      }
-      fileSize = parsedSize;
-    }
+      const rawDownloadUrl =
+        typeof req.body?.downloadUrl === "string" ? req.body.downloadUrl.trim() : "";
 
-    const [latest] = await db
-      .select({
-        versionCode: appReleasesTable.versionCode,
-        versionName: appReleasesTable.versionName,
-      })
-      .from(appReleasesTable)
-      .orderBy(desc(appReleasesTable.versionCode))
-      .limit(1);
-
-    let versionCode: number;
-    if (
-      req.body?.versionCode !== undefined &&
-      req.body?.versionCode !== null &&
-      req.body?.versionCode !== ""
-    ) {
-      const parsedCode = Number(req.body.versionCode);
-      if (!Number.isSafeInteger(parsedCode) || parsedCode < 1 || parsedCode > 2_147_483_647) {
-        res.status(400).json({ error: "Version code must be a valid positive integer." });
-        return;
-      }
-      const [duplicate] = await db
-        .select({ id: appReleasesTable.id })
-        .from(appReleasesTable)
-        .where(eq(appReleasesTable.versionCode, parsedCode))
-        .limit(1);
-      if (duplicate) {
-        res.status(409).json({
-          error: `Version code ${parsedCode} already exists in the release database. Choose a higher version code or edit the existing release.`,
-        });
-        return;
-      }
-      versionCode = parsedCode;
-    } else {
-      const baseCode = Math.max(latest?.versionCode ?? 0, DEFAULT_APP_VERSION_CODE);
-      if (baseCode >= 2_147_483_647) {
-        res.status(409).json({ error: "The Android version code limit has been reached." });
-        return;
-      }
-      versionCode = baseCode + 1;
-    }
-
-    let versionName: string;
-    if (typeof req.body?.versionName === "string" && req.body.versionName.trim().length > 0) {
-      const candidate = req.body.versionName.trim();
-      if (!/^[0-9A-Za-z._-]{1,32}$/.test(candidate)) {
+      if (!uploadedFile && rawDownloadUrl.length === 0) {
         res.status(400).json({
-          error: "Version name can only contain letters, numbers, dots, underscores, and hyphens.",
+          error: "Upload an .apk file or enter a valid public HTTPS update link.",
         });
         return;
       }
-      versionName = candidate;
-    } else {
-      const previousVersionName = latest?.versionName ?? DEFAULT_APP_VERSION_NAME;
-      const bumped = bumpPatchVersion(previousVersionName);
-      if (!bumped) {
-        res.status(409).json({ error: "Could not automatically generate the next app version name." });
+
+      let validatedExternalUrl: string | null = null;
+      if (!uploadedFile) {
+        const urlCheck = validateHttpsDownloadUrl(rawDownloadUrl);
+        if (urlCheck.error || !urlCheck.url) {
+          res.status(400).json({ error: urlCheck.error ?? "Invalid HTTPS download URL." });
+          return;
+        }
+        validatedExternalUrl = urlCheck.url;
+      }
+
+      const shaCheck = validateOptionalSha256(req.body?.sha256);
+      if (shaCheck.error) {
+        await cleanupUploadedFile();
+        res.status(400).json({ error: shaCheck.error });
         return;
       }
-      versionName = bumped;
+
+      let minSupportedVersionCode: number | null = null;
+      if (
+        req.body?.minSupportedVersionCode !== undefined &&
+        req.body?.minSupportedVersionCode !== null &&
+        req.body?.minSupportedVersionCode !== ""
+      ) {
+        const parsedMin = Number(req.body.minSupportedVersionCode);
+        if (!Number.isSafeInteger(parsedMin) || parsedMin < 1 || parsedMin > 2_147_483_647) {
+          await cleanupUploadedFile();
+          res.status(400).json({ error: "Minimum supported version code must be a positive integer." });
+          return;
+        }
+        minSupportedVersionCode = parsedMin;
+      }
+
+      let fileSize: number | null = null;
+      if (
+        !uploadedFile &&
+        req.body?.fileSize !== undefined &&
+        req.body?.fileSize !== null &&
+        req.body?.fileSize !== ""
+      ) {
+        const parsedSize = Number(req.body.fileSize);
+        if (!Number.isSafeInteger(parsedSize) || parsedSize < 1) {
+          res.status(400).json({ error: "File size must be a positive integer in bytes." });
+          return;
+        }
+        fileSize = parsedSize;
+      }
+
+      const [latest] = await db
+        .select({
+          versionCode: appReleasesTable.versionCode,
+          versionName: appReleasesTable.versionName,
+        })
+        .from(appReleasesTable)
+        .orderBy(desc(appReleasesTable.versionCode))
+        .limit(1);
+
+      let versionCode: number;
+      if (
+        req.body?.versionCode !== undefined &&
+        req.body?.versionCode !== null &&
+        req.body?.versionCode !== ""
+      ) {
+        const parsedCode = Number(req.body.versionCode);
+        if (!Number.isSafeInteger(parsedCode) || parsedCode < 1 || parsedCode > 2_147_483_647) {
+          await cleanupUploadedFile();
+          res.status(400).json({ error: "Version code must be a valid positive integer." });
+          return;
+        }
+        const [duplicate] = await db
+          .select({ id: appReleasesTable.id })
+          .from(appReleasesTable)
+          .where(eq(appReleasesTable.versionCode, parsedCode))
+          .limit(1);
+        if (duplicate) {
+          await cleanupUploadedFile();
+          res.status(409).json({
+            error: `Version code ${parsedCode} already exists in the release database. Choose a higher version code or edit the existing release.`,
+          });
+          return;
+        }
+        versionCode = parsedCode;
+      } else {
+        const baseCode = Math.max(latest?.versionCode ?? 0, DEFAULT_APP_VERSION_CODE);
+        if (baseCode >= 2_147_483_647) {
+          await cleanupUploadedFile();
+          res.status(409).json({ error: "The Android version code limit has been reached." });
+          return;
+        }
+        versionCode = baseCode + 1;
+      }
+
+      let versionName: string;
+      if (typeof req.body?.versionName === "string" && req.body.versionName.trim().length > 0) {
+        const candidate = req.body.versionName.trim();
+        if (!/^[0-9A-Za-z._-]{1,32}$/.test(candidate)) {
+          await cleanupUploadedFile();
+          res.status(400).json({
+            error: "Version name can only contain letters, numbers, dots, underscores, and hyphens.",
+          });
+          return;
+        }
+        versionName = candidate;
+      } else {
+        const previousVersionName = latest?.versionName ?? DEFAULT_APP_VERSION_NAME;
+        const bumped = bumpPatchVersion(previousVersionName);
+        if (!bumped) {
+          await cleanupUploadedFile();
+          res.status(409).json({ error: "Could not automatically generate the next app version name." });
+          return;
+        }
+        versionName = bumped;
+      }
+
+      let finalDownloadUrl: string | null = validatedExternalUrl;
+      let finalFileName: string | null = null;
+      let finalSha256: string | null = shaCheck.value ?? null;
+      let storageMode: "external" | "server" | "github" = "external";
+      let storageWarning: string | undefined;
+
+      if (uploadedFile) {
+        if (uploadedFile.size <= 0 || !(await isZipMagic(uploadedFile.path))) {
+          await cleanupUploadedFile();
+          res.status(400).json({
+            error: "Uploaded file is not a valid Android .apk package.",
+          });
+          return;
+        }
+
+        const computedSha256 = await computeFileSha256(uploadedFile.path);
+        if (shaCheck.value && shaCheck.value !== computedSha256) {
+          await cleanupUploadedFile();
+          res.status(400).json({
+            error: "The provided SHA-256 does not match the uploaded APK file.",
+          });
+          return;
+        }
+
+        fileSize = uploadedFile.size;
+        finalSha256 = computedSha256;
+
+        if (process.env.GITHUB_TOKEN?.trim()) {
+          try {
+            finalDownloadUrl = await uploadApkToGitHubRelease({
+              filePath: uploadedFile.path,
+              fileSize: uploadedFile.size,
+              versionName,
+              title,
+              changelog: changelog.trim(),
+            });
+            finalFileName = null;
+            storageMode = "github";
+            await cleanupUploadedFile();
+          } catch (githubError) {
+            logger.error({ err: githubError }, "GitHub Release mirror failed; falling back to local API hosting.");
+            finalDownloadUrl = null;
+            finalFileName = uploadedFile.filename;
+            storageMode = "server";
+            shouldCleanupUpload = false;
+            storageWarning =
+              "GitHub Release auto-mirror failed, so the APK is temporarily hosted on the Render API server instead.";
+          }
+        } else {
+          finalDownloadUrl = null;
+          finalFileName = uploadedFile.filename;
+          storageMode = "server";
+          shouldCleanupUpload = false;
+        }
+      }
+
+      const now = new Date();
+      const [release] = await db
+        .insert(appReleasesTable)
+        .values({
+          versionCode,
+          versionName,
+          title,
+          changelog: changelog.trim(),
+          downloadUrl: finalDownloadUrl,
+          fileName: finalFileName,
+          fileSize,
+          sha256: finalSha256,
+          isMandatory,
+          minSupportedVersionCode,
+          isActive,
+          updatedAt: now,
+        })
+        .returning();
+
+      const push: PushResult =
+        isActive && sendPush
+          ? await notifyDevices(versionCode, versionName, title)
+          : { status: "skipped", deviceCount: 0, deliveredCount: 0 };
+
+      const warnings = [storageWarning, pushWarning(push)].filter(
+        (entry): entry is string => Boolean(entry),
+      );
+
+      res.status(201).json({
+        release: serializeRelease(release),
+        push,
+        storageMode,
+        ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
+      });
+    } catch (error) {
+      await cleanupUploadedFile();
+      logger.error({ err: error }, "Failed to publish app update.");
+      res.status(500).json({ error: "Could not publish the app update. Please try again." });
     }
-
-    const now = new Date();
-    const [release] = await db
-      .insert(appReleasesTable)
-      .values({
-        versionCode,
-        versionName,
-        title,
-        changelog: changelog.trim(),
-        downloadUrl: urlCheck.url,
-        fileSize,
-        sha256: shaCheck.value ?? null,
-        isMandatory,
-        minSupportedVersionCode,
-        isActive,
-        updatedAt: now,
-      })
-      .returning();
-
-    const push: PushResult =
-      isActive && sendPush
-        ? await notifyDevices(versionCode, versionName, title)
-        : { status: "skipped", deviceCount: 0, deliveredCount: 0 };
-
-    const warning = pushWarning(push);
-    res.status(201).json({
-      release: serializeRelease(release),
-      push,
-      ...(warning ? { warning } : {}),
-    });
   },
 );
 
@@ -621,13 +919,19 @@ router.patch("/admin/app-updates/:id", requireAdmin, async (req, res): Promise<v
     updates.changelog = req.body.changelog.trim();
   }
 
+  let replacingHostedApk = false;
   if (req.body?.downloadUrl !== undefined) {
-    const urlCheck = validateHttpsDownloadUrl(req.body.downloadUrl);
-    if (urlCheck.error || !urlCheck.url) {
-      res.status(400).json({ error: urlCheck.error ?? "Invalid download URL." });
-      return;
+    const rawPatchUrl = typeof req.body.downloadUrl === "string" ? req.body.downloadUrl.trim() : "";
+    if (rawPatchUrl.length > 0 && rawPatchUrl !== `/api/app-updates/${id}/download`) {
+      const urlCheck = validateHttpsDownloadUrl(rawPatchUrl);
+      if (urlCheck.error || !urlCheck.url) {
+        res.status(400).json({ error: urlCheck.error ?? "Invalid download URL." });
+        return;
+      }
+      updates.downloadUrl = urlCheck.url;
+      updates.fileName = null;
+      replacingHostedApk = true;
     }
-    updates.downloadUrl = urlCheck.url;
   }
 
   if (req.body?.sha256 !== undefined) {
@@ -660,6 +964,14 @@ router.patch("/admin/app-updates/:id", requireAdmin, async (req, res): Promise<v
     }
   }
 
+  const [existingBeforePatch] = replacingHostedApk
+    ? await db
+        .select({ fileName: appReleasesTable.fileName })
+        .from(appReleasesTable)
+        .where(eq(appReleasesTable.id, id))
+        .limit(1)
+    : [];
+
   const [updated] = await db
     .update(appReleasesTable)
     .set(updates)
@@ -669,6 +981,10 @@ router.patch("/admin/app-updates/:id", requireAdmin, async (req, res): Promise<v
   if (!updated) {
     res.status(404).json({ error: "Release not found." });
     return;
+  }
+
+  if (replacingHostedApk && existingBeforePatch?.fileName) {
+    await safeUnlink(path.join(APK_STORAGE_DIR, path.basename(existingBeforePatch.fileName)));
   }
 
   res.json({ release: serializeRelease(updated) });
@@ -684,11 +1000,15 @@ router.delete("/admin/app-updates/:id", requireAdmin, async (req, res): Promise<
   const [deleted] = await db
     .delete(appReleasesTable)
     .where(eq(appReleasesTable.id, id))
-    .returning({ id: appReleasesTable.id });
+    .returning({ id: appReleasesTable.id, fileName: appReleasesTable.fileName });
 
   if (!deleted) {
     res.status(404).json({ error: "Release not found." });
     return;
+  }
+
+  if (deleted.fileName) {
+    await safeUnlink(path.join(APK_STORAGE_DIR, path.basename(deleted.fileName)));
   }
 
   res.json({ success: true, id: deleted.id });

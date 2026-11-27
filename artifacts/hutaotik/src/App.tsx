@@ -1,9 +1,9 @@
-import React, { Component, ReactNode, useState, useEffect } from "react";
+import React, { Component, ReactNode, useState, useEffect, useRef } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { loadScreenTransition } from "@/lib/screen-transitions";
+import { loadScreenTransition, onScreenTransitionChanged } from "@/lib/screen-transitions";
 import {
   applyBounceAnimation,
   loadBounceAnimationEnabled,
@@ -22,6 +22,7 @@ import { SplashIntro } from "@/components/splash-intro";
 import Home from "@/pages/home";
 import History from "@/pages/history";
 import Updates from "@/pages/updates";
+import Suggestions from "@/pages/suggestions";
 import Settings from "@/pages/settings";
 import TaotoolsPage from "@/pages/taotools";
 import Admin from "@/pages/admin";
@@ -81,6 +82,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 function Router() {
   const [route, setRoute] = useState(() => window.location.hash.replace("#", "") || "/");
   const [bounceEnabled, setBounceEnabled] = useState(() => loadBounceAnimationEnabled());
+  const [savedTransition, setSavedTransition] = useState(() => loadScreenTransition());
+  const transitionWrapperRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -91,10 +94,22 @@ function Router() {
     window.addEventListener("hashchange", handleHashChange);
     handleHashChange();
     const unsubscribeBounce = onBounceAnimationChanged(setBounceEnabled);
+    const unsubscribeTransition = onScreenTransitionChanged((next) => {
+      setSavedTransition(next);
+      // Replay the new transition live without unmounting the current screen or closing <details>.
+      requestAnimationFrame(() => {
+        const el = transitionWrapperRef.current;
+        if (!el || next === "none") return;
+        el.style.animation = "none";
+        void el.offsetWidth;
+        el.style.animation = "";
+      });
+    });
 
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
       unsubscribeBounce();
+      unsubscribeTransition();
     };
   }, []);
 
@@ -114,6 +129,9 @@ function Router() {
       break;
     case "/updates":
       screen = <Updates />;
+      break;
+    case "/suggestions":
+      screen = <Suggestions />;
       break;
     case "/settings":
       screen = <Settings />;
@@ -137,13 +155,13 @@ function Router() {
       screen = <NotFound />;
   }
 
-  const savedTransition = loadScreenTransition();
   const transition =
     !bounceEnabled && (savedTransition === "bounce" || savedTransition === "elastic")
       ? "fade"
       : savedTransition;
   return (
     <div
+      ref={transitionWrapperRef}
       key={cleanRoute}
       className={transition === "none" ? undefined : `screen-transition screen-transition--${transition}`}
     >

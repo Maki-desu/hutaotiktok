@@ -1,5 +1,21 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, ImagePlus, Palette, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Bell, BellRing, ChevronDown, HardDrive, ImagePlus, Loader2, Palette, RefreshCw, Trash2 } from "lucide-react";
+import {
+  clearTemporaryCache,
+  formatStorageBytes,
+  inspectCacheStorage,
+  type CacheStorageInfo,
+} from "@/lib/cache-storage";
+import {
+  getNotificationStatus,
+  loadNotificationPreferences,
+  openDeviceNotificationSettings,
+  requestAppNotificationPermission,
+  saveNotificationPreferences,
+  sendTestNotification,
+  type NotificationPreferences,
+} from "@/lib/notifications";
+import { useToast } from "@/hooks/use-toast";
 import {
   applyThemeCustomization,
   loadThemeCustomization,
@@ -133,6 +149,111 @@ export default function Settings() {
   });
   const [brandingError, setBrandingError] = useState<string | null>(null);
   const [savingBrandingKey, setSavingBrandingKey] = useState<BrandingImageKey | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<CacheStorageInfo | null>(null);
+  const [loadingCache, setLoadingCache] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(() =>
+    loadNotificationPreferences(),
+  );
+  const [notifStatus, setNotifStatus] = useState(() => getNotificationStatus());
+  const [requestingNotifPerm, setRequestingNotifPerm] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const syncStatus = () => setNotifStatus(getNotificationStatus());
+    window.addEventListener("focus", syncStatus);
+    return () => window.removeEventListener("focus", syncStatus);
+  }, []);
+
+  const updateNotifPref = (key: keyof NotificationPreferences, value: boolean) => {
+    const updated = saveNotificationPreferences({
+      ...notifPrefs,
+      [key]: value,
+    });
+    setNotifPrefs(updated);
+    setNotifStatus(getNotificationStatus());
+  };
+
+  const handleEnableNotifications = async () => {
+    setRequestingNotifPerm(true);
+    try {
+      const result = await requestAppNotificationPermission();
+      const refreshed = getNotificationStatus();
+      setNotifStatus(refreshed);
+      if (result === "granted" || refreshed.granted) {
+        toast({
+          title: "Push notifications enabled!",
+          description: "Live download bars, update alerts, and announcements are now active.",
+        });
+      } else {
+        toast({
+          title: "Notification permission blocked",
+          description: "Tap 'Open Android Notification Settings' to allow notifications for HutaoTik.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setRequestingNotifPerm(false);
+    }
+  };
+
+  const handleSendTestNotification = () => {
+    const sent = sendTestNotification();
+    if (sent) {
+      toast({
+        title: "Test notification sent!",
+        description: "Check your notification shade to see how HutaoTik alerts look.",
+      });
+    } else {
+      toast({
+        title: "Permission required",
+        description: "Allow notifications for HutaoTik first, then try sending a test alert.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const refreshCacheInfo = useCallback(async () => {
+    setLoadingCache(true);
+    try {
+      const info = await inspectCacheStorage();
+      setCacheInfo(info);
+    } catch (error) {
+      console.error("Could not inspect app cache.", error);
+    } finally {
+      setLoadingCache(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCacheInfo();
+  }, [refreshCacheInfo]);
+
+  const handleClearCache = async () => {
+    setClearingCache(true);
+    try {
+      const beforeBytes = cacheInfo?.totalBytes ?? 0;
+      const { freedBytes } = await clearTemporaryCache();
+      const updated = await inspectCacheStorage();
+      setCacheInfo(updated);
+      const effectiveFreed = Math.max(freedBytes, Math.max(0, beforeBytes - updated.totalBytes));
+      toast({
+        title: effectiveFreed > 0 ? "Temporary cache cleared" : "Cache is already clean",
+        description:
+          effectiveFreed > 0
+            ? `Freed ${formatStorageBytes(effectiveFreed)} without touching your saved downloads.`
+            : "No temporary files needed to be removed.",
+      });
+    } catch (error) {
+      toast({
+        title: "Could not clear cache",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setClearingCache(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -307,7 +428,7 @@ export default function Settings() {
   );
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5 animate-in fade-in duration-300">
+    <div className="mx-auto max-w-2xl space-y-5">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-bold font-syne">
           <Palette className="h-6 w-6 text-primary" />
@@ -555,6 +676,227 @@ export default function Settings() {
             {transitionError}
           </p>
         )}
+        </div>
+      </details>
+
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "270ms" }}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <span>
+            <span className="flex items-center gap-2 text-base font-semibold text-card-foreground">
+              <Bell className="h-4 w-4 text-primary" />
+              Push Notifications
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                  notifStatus.granted
+                    ? "border-emerald-500/35 bg-emerald-500/15 text-emerald-400"
+                    : "border-amber-500/35 bg-amber-500/15 text-amber-400"
+                }`}
+              >
+                {notifStatus.granted ? "Allowed" : "Enable"}
+              </span>
+            </span>
+            <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
+              Live background download bars, app update alerts, and lobby announcements.
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
+        </summary>
+        <div className="space-y-3 pb-4">
+          {!notifStatus.granted && (
+            <div className="space-y-2 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3">
+              <p className="text-xs font-semibold text-amber-300">
+                Notification permission is currently turned off.
+              </p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Allow notifications so downloads keep running with live progress when you leave HutaoTik, and so you receive new update &amp; announcement alerts.
+              </p>
+              <div className="flex flex-wrap gap-2 pt-0.5">
+                <button
+                  type="button"
+                  disabled={requestingNotifPerm}
+                  onClick={() => void handleEnableNotifications()}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-xs font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                >
+                  <BellRing className="h-3.5 w-3.5" />
+                  {requestingNotifPerm ? "Requesting…" : "Enable Notifications"}
+                </button>
+                <button
+                  type="button"
+                  onClick={openDeviceNotificationSettings}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold text-foreground transition-colors hover:border-primary/40"
+                >
+                  Android Settings
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="notif-downloads-switch" className="cursor-pointer">
+                <span className="block text-sm font-semibold text-foreground">
+                  Live Download Notifications
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Show live download progress and keep downloading after you exit the app.
+                </span>
+              </label>
+              <Switch
+                id="notif-downloads-switch"
+                checked={notifPrefs.downloads}
+                onCheckedChange={(checked) => updateNotifPref("downloads", checked)}
+                aria-label="Live download notifications"
+              />
+            </div>
+
+            <div className="border-t border-border/60 pt-2.5 flex items-center justify-between gap-3">
+              <label htmlFor="notif-updates-switch" className="cursor-pointer">
+                <span className="block text-sm font-semibold text-foreground">
+                  App Update Alerts
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Notify you automatically when a new HutaoTik release is published.
+                </span>
+              </label>
+              <Switch
+                id="notif-updates-switch"
+                checked={notifPrefs.updates}
+                onCheckedChange={(checked) => updateNotifPref("updates", checked)}
+                aria-label="App update notifications"
+              />
+            </div>
+
+            <div className="border-t border-border/60 pt-2.5 flex items-center justify-between gap-3">
+              <label htmlFor="notif-announcements-switch" className="cursor-pointer">
+                <span className="block text-sm font-semibold text-foreground">
+                  Announcement Alerts
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Notify you when new announcements or notices are posted to the lobby.
+                </span>
+              </label>
+              <Switch
+                id="notif-announcements-switch"
+                checked={notifPrefs.announcements}
+                onCheckedChange={(checked) => updateNotifPref("announcements", checked)}
+                aria-label="Announcement notifications"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleSendTestNotification}
+              className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-xl border border-primary/40 bg-primary/10 px-3 text-xs font-bold text-primary transition-colors hover:bg-primary/20"
+            >
+              <BellRing className="h-3.5 w-3.5" />
+              Send Test Notification
+            </button>
+            {notifStatus.granted && notifStatus.sdkInt > 0 && (
+              <button
+                type="button"
+                onClick={openDeviceNotificationSettings}
+                className="inline-flex h-9 items-center justify-center rounded-xl border border-border bg-background px-3 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+              >
+                Channels
+              </button>
+            )}
+          </div>
+        </div>
+      </details>
+
+      <details className="animate-card-bounce-in settings-disclosure rounded-2xl border border-border bg-card px-4 shadow-sm" style={{ animationDelay: "320ms" }}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <span>
+            <span className="flex items-center gap-2 text-base font-semibold text-card-foreground">
+              <HardDrive className="h-4 w-4 text-primary" />
+              Storage &amp; Cache
+              {cacheInfo && (
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary">
+                  {cacheInfo.totalBytes > 0 ? formatStorageBytes(cacheInfo.totalBytes) : "Clean"}
+                </span>
+              )}
+            </span>
+            <span className="mt-1 block text-left text-xs font-normal text-muted-foreground">
+              Inspect and clear temporary TaoCompress, download, and update cache files.
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300" />
+        </summary>
+        <div className="space-y-3 pb-4">
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background p-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Temporary Cache Size
+              </p>
+              <p className="mt-0.5 font-mono text-lg font-extrabold text-foreground">
+                {loadingCache && !cacheInfo
+                  ? "Scanning…"
+                  : formatStorageBytes(cacheInfo?.totalBytes ?? 0)}
+              </p>
+              {cacheInfo?.isNative && (
+                <p className="text-[11px] text-muted-foreground">
+                  {cacheInfo.fileCount} temporary file{cacheInfo.fileCount === 1 ? "" : "s"}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void refreshCacheInfo()}
+              disabled={loadingCache || clearingCache}
+              aria-label="Refresh cache storage size"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${loadingCache ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+
+          {cacheInfo?.isNative && (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-border bg-background/70 p-2.5">
+                <p className="text-[10px] font-semibold text-muted-foreground">TaoCompress</p>
+                <p className="mt-0.5 font-mono text-xs font-bold text-foreground">
+                  {formatStorageBytes(cacheInfo.breakdown.compressedVideos)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-background/70 p-2.5">
+                <p className="text-[10px] font-semibold text-muted-foreground">Temp Downloads</p>
+                <p className="mt-0.5 font-mono text-xs font-bold text-foreground">
+                  {formatStorageBytes(cacheInfo.breakdown.tempDownloads)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-background/70 p-2.5">
+                <p className="text-[10px] font-semibold text-muted-foreground">Update APKs</p>
+                <p className="mt-0.5 font-mono text-xs font-bold text-foreground">
+                  {formatStorageBytes(cacheInfo.breakdown.updateApks)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Only temporary working files are removed. Your saved videos, photos, settings, and built-in downloader tools stay untouched.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => void handleClearCache()}
+            disabled={clearingCache || (cacheInfo !== null && cacheInfo.totalBytes === 0 && cacheInfo.fileCount === 0)}
+            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 text-xs font-bold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {clearingCache ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Clearing Temporary Cache…
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" />
+                Clear Temporary Cache
+              </>
+            )}
+          </button>
         </div>
       </details>
       </div>

@@ -1,12 +1,17 @@
 package com.hutaotik.app;
 
+import android.Manifest;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.ContentValues;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.app.DownloadManager;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -18,6 +23,8 @@ import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
@@ -33,12 +40,16 @@ import org.json.JSONException;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
@@ -48,17 +59,24 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "HutaoTik";
     private static final int REQUEST_CODE_PICK_FOLDER = 9999;
+    private static final int REQUEST_CODE_NOTIFICATIONS = 9998;
     private static final String FACEBOOK_FOLDER_PREF = "facebook_download_folder_uri";
     private static final AtomicReference<String> pendingSharedText = new AtomicReference<>();
+    private static final AtomicReference<String> pendingNotificationRoute = new AtomicReference<>();
+    private static volatile MainActivity activeInstance;
     private final Map<String, File> pendingBlobFiles = new ConcurrentHashMap<>();
+    private final Map<String, File> compressedVideoFiles = new ConcurrentHashMap<>();
     private final ExecutorService facebookExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService youtubeExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService socialExecutor = Executors.newFixedThreadPool(2);
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService mediaExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Object ytDlpUpdateLock = new Object();
     private volatile BroadcastReceiver activeUpdateReceiver;
@@ -71,6 +89,15 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        activeInstance = this;
+        HutaoNotificationHelper.ensureChannels(this);
+        NotificationSyncJobService.schedule(this);
+        DownloadForegroundService.setProgressRelay((taskId, percent, loaded, total, eta, status) -> {
+            MainActivity act = activeInstance;
+            if (act != null) {
+                act.emitWebViewDownloadProgress(taskId, percent, loaded, total, eta, status);
+            }
+        });
         getBridge().getWebView().addJavascriptInterface(new WebAppInterface(), "AndroidStorageBridge");
         try {
             YoutubeDL.getInstance().init(getApplicationContext());
@@ -84,11 +111,19 @@ public class MainActivity extends BridgeActivity {
             facebookFfmpegInitError = e.getMessage();
         }
         handleSendIntent(getIntent());
+        handleNotificationRouteIntent(getIntent());
     }
 
     @Override
     public void onDestroy() {
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
         unregisterActiveUpdateReceiver();
+        for (File file : compressedVideoFiles.values()) {
+            if (file != null) file.delete();
+        }
+        compressedVideoFiles.clear();
         super.onDestroy();
     }
 
@@ -323,20 +358,39 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void downloadFacebook(String url, String quality, String filename, String folderName, String requestId) {
-            facebookExecutor.execute(() -> {
-                try {
-                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting Facebook download…");
-                    ensureFacebookUrl(url);
-                    ensureFacebookDownloader();
-                    File output = downloadFacebookFile(url, quality, filename, requestId);
-                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
-                    saveFacebookFile(output, filename, folderName);
-                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
-                    sendFacebookResult(requestId, new JSONObject());
-                } catch (Exception e) {
-                    sendFacebookError(requestId, e);
-                }
-            });
+            Context appCtx = getApplicationContext();
+            String displayTitle = "Facebook · " + (filename != null && !filename.trim().isEmpty() ? filename.trim() : "Video");
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                displayTitle,
+                folderName,
+                true,
+                (task) -> {
+                    try {
+                        task.updateProgress(2, 0, 0, -1, "Starting Facebook download…");
+                        ensureFacebookUrl(url);
+                        ensureFacebookDownloader();
+                        task.checkCancelled();
+                        File output = downloadFacebookFile(url, quality, filename, requestId);
+                        task.checkCancelled();
+                        task.updateProgress(95, 0, 0, -1, "Saving to device folder…");
+                        String safeName = filename != null ? filename.trim() : "facebook_video.mp4";
+                        String mime = safeName.toLowerCase(Locale.ROOT).endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
+                        Uri savedUri = MediaFolderSaver.saveFileToUserFolder(appCtx, output, safeName, folderName, mime);
+                        task.updateProgress(100, output.length(), output.length(), -1, "Saved to device folder");
+                        task.markCompleted(safeName, savedUri, mime);
+                        sendFacebookResult(requestId, new JSONObject());
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendFacebookError(requestId, new Exception("Download cancelled."));
+                    } catch (Exception e) {
+                        task.markFailed(e.getMessage());
+                        sendFacebookError(requestId, e);
+                    }
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -404,24 +458,44 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void downloadYouTube(String url, String formatStr, String filename, String folderName, String requestId) {
-            youtubeExecutor.execute(() -> {
-                File outputDir = null;
-                try {
-                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting YouTube download…");
-                    ensureYouTubeUrl(url);
-                    ensureYouTubeDownloader();
-                    outputDir = downloadYouTubeFile(url, formatStr, requestId);
-                    File output = findYouTubeOutput(outputDir, "audio".equals(formatStr));
-                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
-                    saveYouTubeFile(output, filename, folderName);
-                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
-                    sendYouTubeResult(requestId, new JSONObject());
-                } catch (Exception e) {
-                    sendYouTubeError(requestId, e);
-                } finally {
-                    if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
-                }
-            });
+            Context appCtx = getApplicationContext();
+            String displayTitle = "YouTube · " + (filename != null && !filename.trim().isEmpty() ? filename.trim() : "Video");
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                displayTitle,
+                folderName,
+                true,
+                (task) -> {
+                    File outputDir = null;
+                    try {
+                        task.updateProgress(2, 0, 0, -1, "Starting YouTube download…");
+                        ensureYouTubeUrl(url);
+                        ensureYouTubeDownloader();
+                        task.checkCancelled();
+                        outputDir = downloadYouTubeFile(url, formatStr, requestId);
+                        task.checkCancelled();
+                        File output = findYouTubeOutput(outputDir, "audio".equals(formatStr));
+                        task.updateProgress(95, 0, 0, -1, "Saving to device folder…");
+                        String safeName = filename != null ? filename.trim() : "youtube_video.mp4";
+                        boolean isAudio = safeName.toLowerCase(Locale.ROOT).endsWith(".m4a");
+                        String mime = isAudio ? "audio/mp4" : "video/mp4";
+                        Uri savedUri = MediaFolderSaver.saveFileToUserFolder(appCtx, output, safeName, folderName, mime);
+                        task.updateProgress(100, output.length(), output.length(), -1, "Saved to device folder");
+                        task.markCompleted(safeName, savedUri, mime);
+                        sendYouTubeResult(requestId, new JSONObject());
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendYouTubeError(requestId, new Exception("Download cancelled."));
+                    } catch (Exception e) {
+                        task.markFailed(e.getMessage());
+                        sendYouTubeError(requestId, e);
+                    } finally {
+                        if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
+                    }
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -447,37 +521,55 @@ public class MainActivity extends BridgeActivity {
             String folderName,
             String requestId
         ) {
-            socialExecutor.execute(() -> {
-                File outputDir = null;
-                try {
-                    String normalizedPlatform = normalizeSocialPlatform(platform);
-                    outputDir = new File(new File(getCacheDir(), "social-downloads"), UUID.randomUUID().toString());
-                    if (!outputDir.mkdirs()) {
-                        throw new IllegalStateException("Could not create temporary download directory.");
+            Context appCtx = getApplicationContext();
+            String label = "instagram".equalsIgnoreCase(platform) ? "Instagram" : "Pinterest";
+            String displayTitle = label + " · " + (filename != null && !filename.trim().isEmpty() ? filename.trim() : "Media");
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                displayTitle,
+                folderName,
+                true,
+                (task) -> {
+                    File outputDir = null;
+                    try {
+                        String normalizedPlatform = normalizeSocialPlatform(platform);
+                        outputDir = new File(new File(appCtx.getCacheDir(), "social-downloads"), UUID.randomUUID().toString());
+                        if (!outputDir.mkdirs()) {
+                            throw new IllegalStateException("Could not create temporary download directory.");
+                        }
+                        task.updateProgress(2, 0, 0, -1, "Starting " + label + " download…");
+                        task.checkCancelled();
+                        SocialDownloadResult result = downloadSocialMediaToTemp(
+                            normalizedPlatform,
+                            url,
+                            directUrl,
+                            mediaType,
+                            outputDir,
+                            requestId
+                        );
+                        task.checkCancelled();
+                        String finalFilename = ensureFilenameExtension(filename, result.extension);
+                        task.updateProgress(95, 0, 0, -1, "Saving to device folder…");
+                        Uri savedUri = MediaFolderSaver.saveFileToUserFolder(appCtx, result.file, finalFilename, folderName, result.mimeType);
+                        task.updateProgress(100, result.file.length(), result.file.length(), -1, "Saved to device folder");
+                        task.markCompleted(finalFilename, savedUri, result.mimeType);
+                        JSONObject response = new JSONObject();
+                        response.put("filename", finalFilename);
+                        response.put("mediaType", result.mediaType);
+                        sendSocialVideoResult(requestId, response);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendSocialVideoError(requestId, new Exception("Download cancelled."));
+                    } catch (Exception e) {
+                        task.markFailed(e.getMessage());
+                        sendSocialVideoError(requestId, e);
+                    } finally {
+                        if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
                     }
-                    sendDownloadProgress(requestId, 2, 0, 0, -1, "Starting download…");
-                    SocialDownloadResult result = downloadSocialMediaToTemp(
-                        normalizedPlatform,
-                        url,
-                        directUrl,
-                        mediaType,
-                        outputDir,
-                        requestId
-                    );
-                    String finalFilename = ensureFilenameExtension(filename, result.extension);
-                    sendDownloadProgress(requestId, 95, 0, 0, -1, "Saving to device folder…");
-                    saveFileToUserFolder(result.file, finalFilename, folderName, result.mimeType);
-                    sendDownloadProgress(requestId, 100, 0, 0, -1, "Saved to device folder");
-                    JSONObject response = new JSONObject();
-                    response.put("filename", finalFilename);
-                    response.put("mediaType", result.mediaType);
-                    sendSocialVideoResult(requestId, response);
-                } catch (Exception e) {
-                    sendSocialVideoError(requestId, e);
-                } finally {
-                    if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
-                }
-            });
+                },
+                null
+            );
         }
 
         @JavascriptInterface
@@ -551,6 +643,227 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void convertTempVideoToGif(
+            String saveId,
+            String filename,
+            String folderName,
+            int maxSeconds,
+            String requestId
+        ) {
+            Context appCtx = getApplicationContext();
+            String displayTitle = "X GIF · " + (filename != null && !filename.trim().isEmpty() ? filename.trim() : "Animated GIF");
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                displayTitle,
+                folderName,
+                true,
+                (task) -> {
+                    File inputFile = saveId != null ? pendingBlobFiles.remove(saveId) : null;
+                    File outputDir = null;
+                    try {
+                        if (inputFile == null || !inputFile.exists() || inputFile.length() <= 0) {
+                            throw new IllegalStateException("Source video for GIF conversion was missing.");
+                        }
+                        ensureBundledFfmpeg();
+                        outputDir = new File(new File(appCtx.getCacheDir(), "gif-exports"), UUID.randomUUID().toString());
+                        if (!outputDir.mkdirs()) {
+                            throw new IllegalStateException("Could not create temporary GIF directory.");
+                        }
+                        File outputGif = new File(outputDir, "output.gif");
+                        int clampedMaxSec = Math.max(1, Math.min(30, maxSeconds > 0 ? maxSeconds : 15));
+
+                        task.updateProgress(5, 0, 0, -1, "Converting to animated GIF…");
+                        List<String> args = new ArrayList<>();
+                        args.add("-y");
+                        args.add("-i");
+                        args.add(inputFile.getAbsolutePath());
+                        args.add("-t");
+                        args.add(String.valueOf(clampedMaxSec));
+                        args.add("-vf");
+                        args.add(
+                            "fps=15,scale='min(480,iw)':-2:flags=lanczos," +
+                            "split[s0][s1];" +
+                            "[s0]palettegen=max_colors=256:stats_mode=diff[p];" +
+                            "[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+                        );
+                        args.add("-loop");
+                        args.add("0");
+                        args.add(outputGif.getAbsolutePath());
+
+                        runBundledFfmpeg(args, clampedMaxSec, requestId, 5, 92, "Converting to animated GIF…");
+                        task.checkCancelled();
+                        if (!outputGif.exists() || outputGif.length() <= 0) {
+                            throw new IllegalStateException("FFmpeg produced an empty GIF file.");
+                        }
+
+                        String finalFilename = ensureFilenameExtension(filename, "gif");
+                        task.updateProgress(95, outputGif.length(), outputGif.length(), -1, "Saving GIF to device…");
+                        Uri savedUri = MediaFolderSaver.saveFileToUserFolder(appCtx, outputGif, finalFilename, folderName, "image/gif");
+                        task.updateProgress(100, outputGif.length(), outputGif.length(), -1, "Saved GIF to device");
+                        task.markCompleted(finalFilename, savedUri, "image/gif");
+
+                        JSONObject response = new JSONObject();
+                        response.put("filename", finalFilename);
+                        sendMediaResult(requestId, response);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendMediaError(requestId, new Exception("GIF conversion cancelled."));
+                    } catch (Exception e) {
+                        task.markFailed(e.getMessage());
+                        sendMediaError(requestId, e);
+                    } finally {
+                        if (inputFile != null) inputFile.delete();
+                        if (outputDir != null) deleteYouTubeTempDirectory(outputDir);
+                    }
+                },
+                null
+            );
+        }
+
+        @JavascriptInterface
+        public void compressTempVideo(
+            String saveId,
+            int crf,
+            int maxHeight,
+            String requestId
+        ) {
+            Context appCtx = getApplicationContext();
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                "TaoCompress · Compressing MP4",
+                "TaoCompress",
+                false,
+                (task) -> {
+                    File inputFile = saveId != null ? pendingBlobFiles.remove(saveId) : null;
+                    File outputFile = null;
+                    try {
+                        if (inputFile == null || !inputFile.exists() || inputFile.length() <= 0) {
+                            throw new IllegalStateException("Source video file was missing.");
+                        }
+                        ensureBundledFfmpeg();
+                        File cacheDir = new File(appCtx.getCacheDir(), "taocompress");
+                        if (!cacheDir.exists() && !cacheDir.mkdirs()) {
+                            throw new IllegalStateException("Could not create compression cache folder.");
+                        }
+                        String compressedId = UUID.randomUUID().toString();
+                        outputFile = new File(cacheDir, "Taocompress_" + compressedId + ".mp4");
+
+                        int clampedCrf = Math.max(18, Math.min(35, crf > 0 ? crf : 24));
+                        String scaleFilter = (maxHeight > 0)
+                            ? "scale='if(gt(ih," + maxHeight + "),-2,trunc(iw/2)*2)':'if(gt(ih," + maxHeight + ")," + maxHeight + ",trunc(ih/2)*2)'"
+                            : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+
+                        task.updateProgress(4, 0, 0, -1, "Compressing to compatible H.264 MP4…");
+
+                        List<String> args = buildMessengerCompatibleMp4Args(
+                            inputFile.getAbsolutePath(),
+                            outputFile.getAbsolutePath(),
+                            clampedCrf,
+                            scaleFilter,
+                            true
+                        );
+                        try {
+                            runBundledFfmpeg(args, 0, requestId, 4, 96, "Compressing to compatible H.264 MP4…");
+                        } catch (Exception firstError) {
+                            if (outputFile.exists()) outputFile.delete();
+                            Log.w(TAG, "FFmpeg compression with audio failed; retrying video-only", firstError);
+                            List<String> videoOnlyArgs = buildMessengerCompatibleMp4Args(
+                                inputFile.getAbsolutePath(),
+                                outputFile.getAbsolutePath(),
+                                clampedCrf,
+                                scaleFilter,
+                                false
+                            );
+                            runBundledFfmpeg(videoOnlyArgs, 0, requestId, 4, 96, "Compressing video track to H.264 MP4…");
+                        }
+
+                        if (!outputFile.exists() || outputFile.length() <= 0) {
+                            throw new IllegalStateException("FFmpeg produced an empty MP4 file.");
+                        }
+
+                        compressedVideoFiles.put(compressedId, outputFile);
+                        task.updateProgress(100, outputFile.length(), outputFile.length(), -1, "Compression complete");
+                        task.markCompleted("Compressed MP4 (" + HutaoNotificationHelper.formatBytes(outputFile.length()) + ")", null, "video/mp4");
+
+                        JSONObject response = new JSONObject();
+                        response.put("compressedId", compressedId);
+                        response.put("size", outputFile.length());
+                        response.put("filePath", outputFile.getAbsolutePath());
+                        response.put("mimeType", "video/mp4");
+                        sendMediaResult(requestId, response);
+                    } catch (Exception e) {
+                        if (outputFile != null) outputFile.delete();
+                        task.markFailed(e.getMessage());
+                        sendMediaError(requestId, e);
+                    } finally {
+                        if (inputFile != null) inputFile.delete();
+                    }
+                },
+                null
+            );
+        }
+
+        @JavascriptInterface
+        public void saveCompressedVideo(
+            String compressedId,
+            String filename,
+            String folderName,
+            String requestId
+        ) {
+            storageExecutor.execute(() -> {
+                try {
+                    File file = compressedId != null ? compressedVideoFiles.get(compressedId) : null;
+                    if (file == null || !file.exists() || file.length() <= 0) {
+                        throw new IllegalStateException("Compressed video is no longer available. Please compress again.");
+                    }
+                    String finalFilename = ensureFilenameExtension(filename, "mp4");
+                    saveFileToUserFolder(file, finalFilename, folderName, "video/mp4");
+                    JSONObject response = new JSONObject();
+                    response.put("filename", finalFilename);
+                    sendMediaResult(requestId, response);
+                } catch (Exception e) {
+                    sendMediaError(requestId, e);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean shareCompressedVideo(String compressedId, String filename) {
+            try {
+                File file = compressedId != null ? compressedVideoFiles.get(compressedId) : null;
+                if (file == null || !file.exists() || file.length() <= 0) return false;
+                Uri contentUri = FileProvider.getUriForFile(
+                    MainActivity.this,
+                    getPackageName() + ".fileprovider",
+                    file
+                );
+                Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                shareIntent.setType("video/mp4");
+                shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+                if (filename != null && !filename.trim().isEmpty()) {
+                    shareIntent.putExtra(Intent.EXTRA_TITLE, filename.trim());
+                }
+                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Intent chooser = Intent.createChooser(shareIntent, "Share compressed video");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                runOnUiThread(() -> startActivity(chooser));
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "Could not share compressed video", e);
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void discardCompressedVideo(String compressedId) {
+            if (compressedId == null) return;
+            File file = compressedVideoFiles.remove(compressedId);
+            if (file != null) file.delete();
+        }
+
+        @JavascriptInterface
         public void openDeviceFolderPicker() {
             try {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -568,6 +881,305 @@ public class MainActivity extends BridgeActivity {
             String text = pendingSharedText.getAndSet(null);
             return text != null ? text : "";
         }
+
+        @JavascriptInterface
+        public String readClipboardText() {
+            try {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard == null || !clipboard.hasPrimaryClip()) return "";
+                ClipData clip = clipboard.getPrimaryClip();
+                if (clip == null || clip.getItemCount() == 0) return "";
+                CharSequence coerced = clip.getItemAt(0).coerceToText(MainActivity.this);
+                return coerced != null ? coerced.toString().trim() : "";
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String getCacheStorageInfo() {
+            long compressedBytes = 0;
+            long tempDownloadBytes = 0;
+            long updateApkBytes = 0;
+            int[] fileCount = { 0 };
+
+            File cacheDir = getCacheDir();
+            compressedBytes += measureDirBytes(new File(cacheDir, "taocompress"), fileCount);
+
+            String[] tempDirs = {
+                "blob-saves",
+                "gif-exports",
+                "youtube-downloads",
+                "facebook-downloads",
+                "social-downloads"
+            };
+            for (String dirName : tempDirs) {
+                tempDownloadBytes += measureDirBytes(new File(cacheDir, dirName), fileCount);
+            }
+
+            File downloadDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (downloadDir != null) {
+                File updateApk = new File(downloadDir, "hutaotik-update.apk");
+                if (updateApk.isFile()) {
+                    updateApkBytes += updateApk.length();
+                    fileCount[0] += 1;
+                }
+            }
+
+            long total = compressedBytes + tempDownloadBytes + updateApkBytes;
+            JSONObject payload = new JSONObject();
+            try {
+                payload.put("totalBytes", total);
+                payload.put("fileCount", fileCount[0]);
+                JSONObject breakdown = new JSONObject();
+                breakdown.put("compressedVideos", compressedBytes);
+                breakdown.put("tempDownloads", tempDownloadBytes);
+                breakdown.put("updateApks", updateApkBytes);
+                payload.put("breakdown", breakdown);
+            } catch (JSONException ignored) {
+            }
+            return payload.toString();
+        }
+
+        @JavascriptInterface
+        public String clearAppCache() {
+            long beforeBytes = 0;
+            int[] counter = { 0 };
+            File cacheDir = getCacheDir();
+            String[] dirs = {
+                "taocompress",
+                "blob-saves",
+                "gif-exports",
+                "youtube-downloads",
+                "facebook-downloads",
+                "social-downloads"
+            };
+            for (String dirName : dirs) {
+                File dir = new File(cacheDir, dirName);
+                beforeBytes += measureDirBytes(dir, counter);
+                deleteYouTubeTempDirectory(dir);
+            }
+
+            pendingBlobFiles.clear();
+            compressedVideoFiles.clear();
+
+            File downloadDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (downloadDir != null) {
+                File updateApk = new File(downloadDir, "hutaotik-update.apk");
+                if (updateApk.isFile()) {
+                    beforeBytes += updateApk.length();
+                    updateApk.delete();
+                }
+            }
+
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView != null) {
+                webView.post(() -> webView.clearCache(true));
+            }
+
+            JSONObject payload = new JSONObject();
+            try {
+                payload.put("freedBytes", beforeBytes);
+            } catch (JSONException ignored) {
+            }
+            return payload.toString();
+        }
+
+        @JavascriptInterface
+        public String getNotificationStatus() {
+            return HutaoNotificationHelper.getStatusJson(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void configureNotifications(
+            boolean downloads,
+            boolean updates,
+            boolean announcements,
+            String apiBaseUrl
+        ) {
+            HutaoNotificationHelper.savePreferences(
+                MainActivity.this,
+                downloads,
+                updates,
+                announcements,
+                apiBaseUrl
+            );
+            NotificationSyncJobService.schedule(MainActivity.this);
+            NotificationSyncJobService.checkNowAsync(MainActivity.this, false);
+        }
+
+        @JavascriptInterface
+        public String requestNotificationPermission() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED) {
+                    return "granted";
+                }
+                runOnUiThread(() -> ActivityCompat.requestPermissions(
+                    MainActivity.this,
+                    new String[] { Manifest.permission.POST_NOTIFICATIONS },
+                    REQUEST_CODE_NOTIFICATIONS
+                ));
+                return "prompted";
+            }
+            return HutaoNotificationHelper.hasNotificationPermission(MainActivity.this) ? "granted" : "denied";
+        }
+
+        @JavascriptInterface
+        public void openNotificationSettings() {
+            runOnUiThread(() -> {
+                try {
+                    Intent intent = new Intent();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        intent.setAction(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                        intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                    } else {
+                        intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                    }
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Log.e(TAG, "Could not open Android notification settings", e);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean sendTestNotification() {
+            return HutaoNotificationHelper.showTestNotification(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void checkNotificationsNow() {
+            NotificationSyncJobService.checkNowAsync(MainActivity.this, true);
+        }
+
+        @JavascriptInterface
+        public void notifyUpdateAvailable(int versionCode, String versionName, String title, String changelog) {
+            HutaoNotificationHelper.showUpdateAvailableNotification(
+                MainActivity.this,
+                versionCode,
+                versionName,
+                title,
+                changelog
+            );
+        }
+
+        @JavascriptInterface
+        public void notifyAnnouncement(int announcementId, String colorType, String content) {
+            HutaoNotificationHelper.showAnnouncementNotification(
+                MainActivity.this,
+                announcementId,
+                colorType,
+                content
+            );
+        }
+
+        @JavascriptInterface
+        public String getPendingNotificationRoute() {
+            String route = pendingNotificationRoute.getAndSet(null);
+            return route != null ? route : "";
+        }
+
+        @JavascriptInterface
+        public void downloadUrlInBackground(
+            String url,
+            String filename,
+            String folderName,
+            String title,
+            String mimeType,
+            String requestId
+        ) {
+            Context appCtx = getApplicationContext();
+            String displayTitle = (title != null && !title.trim().isEmpty())
+                ? title.trim()
+                : (filename != null ? filename : "Downloading video");
+            DownloadForegroundService.runBackgroundTask(
+                appCtx,
+                requestId,
+                displayTitle,
+                folderName,
+                true,
+                (task) -> {
+                    try {
+                        DownloadForegroundService.SavedDownloadResult saved =
+                            DownloadForegroundService.downloadDirectUrlToFolder(
+                                appCtx,
+                                task,
+                                url,
+                                filename,
+                                folderName,
+                                mimeType
+                            );
+                        task.markCompleted(saved.filename, saved.savedUri, saved.mimeType);
+                        JSONObject response = new JSONObject();
+                        response.put("filename", saved.filename);
+                        sendDirectDownloadResult(requestId, response);
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        task.markCancelledSilently();
+                        sendDirectDownloadError(requestId, new Exception("Download cancelled."));
+                    } catch (Exception e) {
+                        task.markFailed(e.getMessage());
+                        sendDirectDownloadError(requestId, e);
+                    }
+                },
+                null
+            );
+        }
+
+        @JavascriptInterface
+        public void startLiveDownloadNotification(String taskId, String title, String folderName) {
+            if (taskId == null || taskId.isEmpty()) return;
+            DownloadForegroundService.registerExternalTask(MainActivity.this, taskId, title, folderName);
+        }
+
+        @JavascriptInterface
+        public void updateLiveDownloadNotification(
+            String taskId,
+            int percent,
+            long loadedBytes,
+            long totalBytes,
+            String status
+        ) {
+            DownloadForegroundService.TaskContext task = DownloadForegroundService.getActiveTask(taskId);
+            if (task != null) {
+                task.updateProgress(percent, loadedBytes, totalBytes, -1, status);
+            }
+        }
+
+        @JavascriptInterface
+        public void finishLiveDownloadNotification(
+            String taskId,
+            boolean success,
+            String filename,
+            String folderName,
+            String errorMessage
+        ) {
+            DownloadForegroundService.TaskContext task = DownloadForegroundService.getActiveTask(taskId);
+            if (task == null) return;
+            if (success) {
+                task.markCompleted(filename, null, MediaFolderSaver.inferMimeType(filename));
+            } else {
+                task.markFailed(errorMessage);
+            }
+        }
+    }
+
+    private long measureDirBytes(File dir, int[] fileCount) {
+        if (dir == null || !dir.exists()) return 0L;
+        if (dir.isFile()) {
+            fileCount[0] += 1;
+            return dir.length();
+        }
+        long sum = 0L;
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                sum += measureDirBytes(child, fileCount);
+            }
+        }
+        return sum;
     }
 
     private YoutubeDLRequest createFacebookRequest(String url) {
@@ -1036,82 +1648,169 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void saveFileToUserFolder(File source, String filename, String folderName, String mimeType) throws Exception {
-        String safeFilename = filename.replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFilename.isEmpty() || safeFilename.equals(".") || safeFilename.equals("..")) {
-            throw new IllegalArgumentException("Invalid download filename.");
-        }
-        String safeFolder = (folderName != null ? folderName : "")
-            .replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", " ").trim();
-        if (safeFolder.isEmpty() || safeFolder.equals(".") || safeFolder.equals("..")) {
-            safeFolder = "HutaoTik Downloads";
-        }
-        String folderUri = getSharedPreferences("hutaotik", MODE_PRIVATE)
-            .getString(FACEBOOK_FOLDER_PREF, null);
+        MediaFolderSaver.saveFileToUserFolder(getApplicationContext(), source, filename, folderName, mimeType);
+    }
 
-        if (folderUri != null) {
-            DocumentFile directory = DocumentFile.fromTreeUri(this, Uri.parse(folderUri));
-            if (directory != null && directory.exists() && directory.canWrite()) {
-                DocumentFile oldFile = directory.findFile(safeFilename);
-                if (oldFile != null && !oldFile.delete()) {
-                    throw new IllegalStateException("Could not replace the existing download.");
+    private void ensureBundledFfmpeg() {
+        if (facebookFfmpegInitError != null) {
+            throw new IllegalStateException("On-device FFmpeg failed to initialize: " + facebookFfmpegInitError);
+        }
+        File ffmpegBin = new File(getApplicationInfo().nativeLibraryDir, "libffmpeg.so");
+        if (!ffmpegBin.exists()) {
+            throw new IllegalStateException("Bundled FFmpeg binary was not found on this device.");
+        }
+    }
+
+    private List<String> buildMessengerCompatibleMp4Args(
+        String inputPath,
+        String outputPath,
+        int crf,
+        String scaleFilter,
+        boolean includeAudio
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("-y");
+        args.add("-i");
+        args.add(inputPath);
+        args.add("-map");
+        args.add("0:v:0");
+        if (includeAudio) {
+            args.add("-map");
+            args.add("0:a:0?");
+        } else {
+            args.add("-an");
+        }
+        args.add("-c:v");
+        args.add("libx264");
+        args.add("-profile:v");
+        args.add("main");
+        args.add("-level");
+        args.add("4.0");
+        args.add("-preset");
+        args.add("veryfast");
+        args.add("-crf");
+        args.add(String.valueOf(crf));
+        args.add("-pix_fmt");
+        args.add("yuv420p");
+        args.add("-vf");
+        args.add(scaleFilter);
+        if (includeAudio) {
+            args.add("-c:a");
+            args.add("aac");
+            args.add("-b:a");
+            args.add("96k");
+            args.add("-ac");
+            args.add("2");
+            args.add("-ar");
+            args.add("44100");
+        }
+        args.add("-movflags");
+        args.add("+faststart");
+        args.add("-max_muxing_queue_size");
+        args.add("1024");
+        args.add(outputPath);
+        return args;
+    }
+
+    private void runBundledFfmpeg(
+        List<String> args,
+        double maxDurationSeconds,
+        String requestId,
+        int startPercent,
+        int endPercent,
+        String statusLabel
+    ) throws Exception {
+        File ffmpegBin = new File(getApplicationInfo().nativeLibraryDir, "libffmpeg.so");
+        File packagesRoot = new File(new File(getNoBackupFilesDir(), "youtubedl-android"), "packages");
+        String ldLibraryPath =
+            new File(packagesRoot, "python/usr/lib").getAbsolutePath() + ":" +
+            new File(packagesRoot, "ffmpeg/usr/lib").getAbsolutePath() + ":" +
+            new File(packagesRoot, "aria2c/usr/lib").getAbsolutePath();
+
+        List<String> command = new ArrayList<>(args.size() + 1);
+        command.add(ffmpegBin.getAbsolutePath());
+        command.addAll(args);
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        Map<String, String> env = pb.environment();
+        env.put("LD_LIBRARY_PATH", ldLibraryPath);
+        env.put("TMPDIR", getCacheDir().getAbsolutePath());
+        pb.redirectErrorStream(true);
+
+        Process process = pb.start();
+        Pattern durationPattern = Pattern.compile("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+        Pattern timePattern = Pattern.compile("time=(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+        double totalSeconds = maxDurationSeconds > 0 ? maxDurationSeconds : 0.0;
+        int lastPercent = startPercent;
+        StringBuilder tailLog = new StringBuilder();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (tailLog.length() > 1500) {
+                    tailLog.delete(0, tailLog.length() - 800);
                 }
-                DocumentFile destination = directory.createFile(mimeType, safeFilename);
-                if (destination != null) {
-                    try {
-                        try (OutputStream stream = getContentResolver().openOutputStream(destination.getUri())) {
-                            if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                            copyYouTubeFile(source, stream);
+                tailLog.append(line).append('\n');
+
+                if (totalSeconds <= 0.0) {
+                    Matcher dm = durationPattern.matcher(line);
+                    if (dm.find()) {
+                        double parsed = parseFfmpegTimestamp(dm.group(1), dm.group(2), dm.group(3));
+                        if (parsed > 0.0) {
+                            totalSeconds = maxDurationSeconds > 0
+                                ? Math.min(parsed, maxDurationSeconds)
+                                : parsed;
                         }
-                        return;
-                    } catch (Exception e) {
-                        destination.delete();
-                        throw e;
                     }
                 }
-            } else {
-                getSharedPreferences("hutaotik", MODE_PRIVATE).edit()
-                    .remove(FACEBOOK_FOLDER_PREF)
-                    .apply();
-            }
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeFilename);
-            values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
-            values.put(
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                Environment.DIRECTORY_DOCUMENTS + "/" + safeFolder
-            );
-            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-            Uri destination = getContentResolver().insert(
-                MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-                values
-            );
-            if (destination == null) throw new IllegalStateException("Could not create the downloaded file.");
-            try {
-                try (OutputStream stream = getContentResolver().openOutputStream(destination)) {
-                    if (stream == null) throw new IllegalStateException("Could not open the destination file.");
-                    copyYouTubeFile(source, stream);
+                if (totalSeconds > 0.0) {
+                    Matcher tm = timePattern.matcher(line);
+                    if (tm.find()) {
+                        double current = parseFfmpegTimestamp(tm.group(1), tm.group(2), tm.group(3));
+                        double ratio = Math.max(0.0, Math.min(1.0, current / totalSeconds));
+                        int mapped = startPercent + (int) Math.round(ratio * (endPercent - startPercent));
+                        if (mapped > lastPercent) {
+                            lastPercent = mapped;
+                            sendDownloadProgress(requestId, mapped, 0, 0, -1, statusLabel);
+                        }
+                    }
                 }
-                ContentValues completed = new ContentValues();
-                completed.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                getContentResolver().update(destination, completed, null, null);
-            } catch (Exception e) {
-                getContentResolver().delete(destination, null, null);
-                throw e;
             }
-            return;
         }
 
-        File documents = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        File directory = new File(documents, safeFolder);
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw new IllegalStateException("Could not create the Documents download folder.");
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            Log.e(TAG, "Bundled FFmpeg failed (exit " + exitCode + "):\n" + tailLog);
+            throw new IllegalStateException("FFmpeg processing failed (exit code " + exitCode + ").");
         }
-        try (OutputStream stream = new java.io.FileOutputStream(new File(directory, safeFilename))) {
-            copyYouTubeFile(source, stream);
+    }
+
+    private double parseFfmpegTimestamp(String hours, String minutes, String seconds) {
+        try {
+            return Double.parseDouble(hours) * 3600.0
+                + Double.parseDouble(minutes) * 60.0
+                + Double.parseDouble(seconds);
+        } catch (Exception ignored) {
+            return 0.0;
         }
+    }
+
+    private void sendMediaError(String requestId, Exception error) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("error", error.getMessage() != null ? error.getMessage() : "Media processing failed.");
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+        sendMediaResult(requestId, result);
+    }
+
+    private void sendMediaResult(String requestId, JSONObject result) {
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null) return;
+        String script = "window.onNativeMediaResult && window.onNativeMediaResult(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
+        webView.post(() -> webView.evaluateJavascript(script, null));
     }
 
     private String inferMimeTypeFromFilename(String filename) {
@@ -1205,6 +1904,23 @@ public class MainActivity extends BridgeActivity {
         String status
     ) {
         if (requestId == null || requestId.isEmpty()) return;
+        DownloadForegroundService.TaskContext activeTask = DownloadForegroundService.getActiveTask(requestId);
+        if (activeTask != null) {
+            activeTask.updateProgress(percent, loadedBytes, totalBytes, etaSeconds, status);
+        } else {
+            emitWebViewDownloadProgress(requestId, percent, loadedBytes, totalBytes, etaSeconds, status);
+        }
+    }
+
+    private void emitWebViewDownloadProgress(
+        String requestId,
+        int percent,
+        long loadedBytes,
+        long totalBytes,
+        long etaSeconds,
+        String status
+    ) {
+        if (requestId == null || requestId.isEmpty()) return;
         JSONObject payload = new JSONObject();
         try {
             payload.put("percent", Math.max(0, Math.min(100, percent)));
@@ -1215,10 +1931,37 @@ public class MainActivity extends BridgeActivity {
         } catch (JSONException e) {
             return;
         }
-        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        WebView webView = getSafeWebView();
         if (webView == null) return;
         String script = "window.onNativeDownloadProgress && window.onNativeDownloadProgress(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(payload.toString()) + ");";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
+    private WebView getSafeWebView() {
+        MainActivity act = activeInstance != null ? activeInstance : this;
+        try {
+            return act.getBridge() != null ? act.getBridge().getWebView() : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void sendDirectDownloadError(String requestId, Exception error) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("error", error != null && error.getMessage() != null ? error.getMessage() : "Download failed.");
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+        sendDirectDownloadResult(requestId, result);
+    }
+
+    private void sendDirectDownloadResult(String requestId, JSONObject result) {
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
+        String script = "window.onNativeDirectDownloadResult && window.onNativeDirectDownloadResult(" +
+            JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         webView.post(() -> webView.evaluateJavascript(script, null));
     }
 
@@ -1233,7 +1976,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void sendStorageSaveResult(String requestId, JSONObject result) {
-        WebView webView = getBridge().getWebView();
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
         String script = "window.onNativeStorageSaveResult && window.onNativeStorageSaveResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         webView.post(() -> webView.evaluateJavascript(script, null));
@@ -1250,7 +1994,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void sendSocialVideoResult(String requestId, JSONObject result) {
-        WebView webView = getBridge().getWebView();
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
         String script = "window.onNativeSocialVideoResult && window.onNativeSocialVideoResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         webView.post(() -> webView.evaluateJavascript(script, null));
@@ -1267,7 +2012,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void sendYouTubeResult(String requestId, JSONObject result) {
-        WebView webView = getBridge().getWebView();
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
         String script = "window.onNativeYouTubeResult && window.onNativeYouTubeResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         webView.post(() -> webView.evaluateJavascript(script, null));
@@ -1370,10 +2116,31 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void sendFacebookResult(String requestId, JSONObject result) {
-        WebView webView = getBridge().getWebView();
+        WebView webView = getSafeWebView();
+        if (webView == null) return;
         String script = "window.onNativeFacebookResult && window.onNativeFacebookResult(" +
             JSONObject.quote(requestId) + "," + JSONObject.quote(result.toString()) + ");";
         webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CODE_NOTIFICATIONS) {
+            boolean granted = grantResults != null &&
+                grantResults.length > 0 &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                NotificationSyncJobService.schedule(this);
+                NotificationSyncJobService.checkNowAsync(this, false);
+            }
+            WebView webView = getSafeWebView();
+            if (webView != null) {
+                String script = "window.onNotificationPermissionResult && window.onNotificationPermissionResult(" +
+                    (granted ? "true" : "false") + ");";
+                webView.post(() -> webView.evaluateJavascript(script, null));
+            }
+        }
     }
 
     @Override
@@ -1416,6 +2183,29 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleSendIntent(intent);
+        handleNotificationRouteIntent(intent);
+    }
+
+    private void handleNotificationRouteIntent(Intent intent) {
+        if (intent == null) return;
+        String route = intent.getStringExtra(HutaoNotificationHelper.EXTRA_ROUTE);
+        if (route == null || route.trim().isEmpty()) return;
+        String cleanRoute = route.trim();
+        if (!cleanRoute.startsWith("/")) cleanRoute = "/" + cleanRoute;
+        pendingNotificationRoute.set(cleanRoute);
+        final String hashTarget = "#" + cleanRoute;
+        WebView webView = getSafeWebView();
+        if (webView != null) {
+            webView.post(() -> {
+                if (webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
+                    webView.evaluateJavascript(
+                        "window.location.hash = " + JSONObject.quote(hashTarget) + ";" +
+                        (hashTarget.equals("#/updates") ? "window.dispatchEvent(new Event('hutaotik:check-update'));" : ""),
+                        null
+                    );
+                }
+            });
+        }
     }
 
     private void handleSendIntent(Intent intent) {

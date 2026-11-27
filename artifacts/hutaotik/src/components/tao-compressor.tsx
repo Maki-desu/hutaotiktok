@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   FolderCheck,
   RefreshCw,
+  Share2,
   Sliders,
   Zap,
   Loader2,
@@ -18,6 +19,13 @@ import {
 } from "lucide-react";
 import { saveBlobToDevice, getStoredFolderName } from "@/lib/download-folder";
 import { type DownloadProgressState } from "@/lib/download-progress";
+import {
+  compressVideoNative,
+  discardCompressedVideoNative,
+  hasNativeVideoCompressor,
+  saveCompressedVideoNative,
+  shareCompressedVideoNative,
+} from "@/lib/native-media";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { useToast } from "@/hooks/use-toast";
 
@@ -30,22 +38,25 @@ function formatBytes(bytes: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
+// Prefer MP4 (H.264/AAC) FIRST for Messenger, WhatsApp, and mobile Gallery compatibility
 function getSupportedMimeType(withAudio: boolean): string {
   if (typeof MediaRecorder === "undefined") return "";
   const types = withAudio
     ? [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4",
         "video/webm;codecs=vp9,opus",
         "video/webm;codecs=vp8,opus",
         "video/webm",
-        "video/mp4;codecs=avc1,mp4a.40.2",
-        "video/mp4",
       ]
     : [
+        "video/mp4;codecs=avc1.42E01E",
+        "video/mp4;codecs=avc1",
+        "video/mp4",
         "video/webm;codecs=vp9",
         "video/webm;codecs=vp8",
         "video/webm",
-        "video/mp4;codecs=avc1",
-        "video/mp4",
       ];
   for (const t of types) {
     if (MediaRecorder.isTypeSupported(t)) {
@@ -53,6 +64,13 @@ function getSupportedMimeType(withAudio: boolean): string {
     }
   }
   return "";
+}
+
+function resolveMaxHeight(scale: "100%" | "720p" | "480p" | "360p"): number {
+  if (scale === "720p") return 720;
+  if (scale === "480p") return 480;
+  if (scale === "360p") return 360;
+  return 0;
 }
 
 const mediaAudioCache = new WeakMap<
@@ -67,6 +85,7 @@ export function TaoCompressorSection({
   folderName?: string | null;
   onOpenFolderPicker?: () => void;
 }) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [originalSize, setOriginalSize] = useState<number>(0);
   const [compressedSize, setCompressedSize] = useState<number>(0);
@@ -76,7 +95,9 @@ export function TaoCompressorSection({
   const [preset, setPreset] = useState<"small" | "balanced" | "high">("balanced");
   const [isCompressing, setIsCompressing] = useState(false);
   const [compressProgress, setCompressProgress] = useState(0);
+  const [compressStatus, setCompressStatus] = useState("Compressing Video…");
   const [compressedBlob, setCompressedBlob] = useState<Blob | null>(null);
+  const [nativeCompressedId, setNativeCompressedId] = useState<string | null>(null);
   const [compressedUrl, setCompressedUrl] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<DownloadProgressState>({ percent: 0 });
@@ -86,21 +107,40 @@ export function TaoCompressorSection({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const urlsRef = useRef<{ video: string | null; compressed: string | null }>({
+  const urlsRef = useRef<{ video: string | null; compressed: string | null; nativeId: string | null }>({
     video: null,
     compressed: null,
+    nativeId: null,
   });
 
   useEffect(() => {
-    urlsRef.current = { video: videoSrc, compressed: compressedUrl };
-  }, [videoSrc, compressedUrl]);
+    urlsRef.current = {
+      video: videoSrc,
+      compressed: compressedUrl,
+      nativeId: nativeCompressedId,
+    };
+  }, [videoSrc, compressedUrl, nativeCompressedId]);
 
   useEffect(() => {
     return () => {
       if (urlsRef.current.video) URL.revokeObjectURL(urlsRef.current.video);
-      if (urlsRef.current.compressed) URL.revokeObjectURL(urlsRef.current.compressed);
+      if (urlsRef.current.compressed?.startsWith("blob:")) {
+        URL.revokeObjectURL(urlsRef.current.compressed);
+      }
+      discardCompressedVideoNative(urlsRef.current.nativeId);
     };
   }, []);
+
+  const clearCompressedOutput = () => {
+    if (compressedUrl?.startsWith("blob:")) URL.revokeObjectURL(compressedUrl);
+    discardCompressedVideoNative(nativeCompressedId);
+    setCompressedUrl(null);
+    setCompressedBlob(null);
+    setNativeCompressedId(null);
+    setCompressedSize(0);
+    setHasCompressed(false);
+    setDownloadSuccessInfo(null);
+  };
 
   const markSettingsDirty = () => {
     if (hasCompressed) {
@@ -124,15 +164,11 @@ export function TaoCompressorSection({
     }
 
     if (videoSrc) URL.revokeObjectURL(videoSrc);
-    if (compressedUrl) URL.revokeObjectURL(compressedUrl);
+    clearCompressedOutput();
+    setSelectedFile(file);
     setOriginalSize(file.size);
-    setCompressedSize(0);
     const url = URL.createObjectURL(file);
     setVideoSrc(url);
-    setHasCompressed(false);
-    setCompressedBlob(null);
-    setCompressedUrl(null);
-    setDownloadSuccessInfo(null);
     setCompressProgress(0);
   };
 
@@ -152,19 +188,51 @@ export function TaoCompressorSection({
   };
 
   const compressVideo = async () => {
-    if (!videoSrc || !videoRef.current) return;
-    if (compressedUrl) {
-      URL.revokeObjectURL(compressedUrl);
-      setCompressedUrl(null);
-    }
+    if (!videoSrc) return;
+    clearCompressedOutput();
     setIsCompressing(true);
-    setCompressProgress(5);
+    setCompressProgress(2);
+    setCompressStatus("Preparing video…");
 
+    // Primary Android path: native FFmpeg H.264 Main + yuv420p + AAC + faststart MP4
+    // Guaranteed to play & share in Facebook Messenger, WhatsApp, Discord, and Android Gallery
+    if (selectedFile && hasNativeVideoCompressor()) {
+      try {
+        const result = await compressVideoNative(
+          selectedFile,
+          {
+            crf: crfQuality,
+            maxHeight: resolveMaxHeight(targetScale),
+          },
+          (percent, status) => {
+            setCompressProgress(percent);
+            if (status) setCompressStatus(status);
+          },
+        );
+        setNativeCompressedId(result.compressedId);
+        setCompressedSize(result.size);
+        setCompressedUrl(result.previewUrl);
+        setHasCompressed(true);
+        setCompressProgress(100);
+        setIsCompressing(false);
+        return;
+      } catch (nativeErr) {
+        console.warn("Native FFmpeg compression failed, falling back to browser encoder:", nativeErr);
+      }
+    }
+
+    // Web / fallback path (prioritizing H.264 MP4 over WebM with even dimensions)
+    if (!videoRef.current) {
+      setIsCompressing(false);
+      return;
+    }
     const video = videoRef.current;
     let stream: MediaStream | null = null;
     video.playsInline = true;
 
     try {
+      setCompressProgress(5);
+      setCompressStatus("Loading video frames…");
       if (video.readyState < 2) {
         await new Promise<void>((resolve, reject) => {
           const timeout = window.setTimeout(() => {
@@ -191,6 +259,7 @@ export function TaoCompressorSection({
       }
 
       setCompressProgress(15);
+      setCompressStatus("Compressing video…");
 
       const canvas = canvasRef.current;
       if (!canvas?.captureStream) {
@@ -201,19 +270,15 @@ export function TaoCompressorSection({
       let h = video.videoHeight;
       if (w === 0 || h === 0) throw new Error("Video dimensions could not be read.");
 
-      if (targetScale === "720p" && h > 720) {
-        const ratio = 720 / h;
+      const maxH = resolveMaxHeight(targetScale);
+      if (maxH > 0 && h > maxH) {
+        const ratio = maxH / h;
         w = Math.round(w * ratio);
-        h = 720;
-      } else if (targetScale === "480p" && h > 480) {
-        const ratio = 480 / h;
-        w = Math.round(w * ratio);
-        h = 480;
-      } else if (targetScale === "360p" && h > 360) {
-        const ratio = 360 / h;
-        w = Math.round(w * ratio);
-        h = 360;
+        h = maxH;
       }
+      // Enforce even dimensions (required by H.264 encoders & Messenger/WhatsApp decoders)
+      w = Math.max(2, w & ~1);
+      h = Math.max(2, h & ~1);
 
       canvas.width = w;
       canvas.height = h;
@@ -229,7 +294,6 @@ export function TaoCompressorSection({
       const targetBitrate = Math.max(250_000, Math.round(2_000_000 * Math.pow(0.85, crfQuality - 18)));
       stream = canvas.captureStream(24);
 
-      // Attach source audio track while muting speaker output via GainNode during compression
       let hasAudioTrack = false;
       try {
         const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -274,7 +338,6 @@ export function TaoCompressorSection({
           ...(hasAudioTrack ? { audioBitsPerSecond: 96_000 } : {}),
         });
       } catch {
-        // Fallback to video-only stream if combined audio+video encoding is unsupported
         stream = canvas.captureStream(24);
         const fallbackMime = getSupportedMimeType(false);
         recorder = new MediaRecorder(stream, {
@@ -369,7 +432,7 @@ export function TaoCompressorSection({
   };
 
   const handleDownloadCompressed = async () => {
-    if (!compressedBlob) return;
+    if (!nativeCompressedId && !compressedBlob) return;
 
     const targetFolder = folderName || getStoredFolderName() || "HutaoTik Downloads";
     if (!folderName && onOpenFolderPicker) {
@@ -378,20 +441,33 @@ export function TaoCompressorSection({
     }
 
     setIsExporting(true);
-    setExportProgress({ percent: 0, status: "Saving compressed video…" });
+    setExportProgress({ percent: 0, status: "Saving compressed MP4…" });
     try {
-      const extension = compressedBlob.type.includes("mp4") ? "mp4" : "webm";
-      const filename = `Taocompress_${Date.now()}.${extension}`;
+      let savedFilename: string;
+      if (nativeCompressedId) {
+        const filename = `Taocompress_${Date.now()}.mp4`;
+        const res = await saveCompressedVideoNative(
+          nativeCompressedId,
+          filename,
+          targetFolder,
+          setExportProgress,
+        );
+        savedFilename = res.filename;
+      } else if (compressedBlob) {
+        const extension = compressedBlob.type.includes("mp4") ? "mp4" : "webm";
+        savedFilename = `Taocompress_${Date.now()}.${extension}`;
+        await saveBlobToDevice(compressedBlob, savedFilename, targetFolder, setExportProgress, {
+          startPercent: 0,
+          endPercent: 100,
+        });
+      } else {
+        return;
+      }
 
-      await saveBlobToDevice(compressedBlob, filename, targetFolder, setExportProgress, {
-        startPercent: 0,
-        endPercent: 100,
-      });
-
-      setDownloadSuccessInfo({ filename, folder: targetFolder });
+      setDownloadSuccessInfo({ filename: savedFilename, folder: targetFolder });
       toast({
         title: "Taocompress Export Complete!",
-        description: `Compressed video saved to Documents/${targetFolder}/${filename}`,
+        description: `Saved compatible MP4 to Movies/${targetFolder}/${savedFilename}`,
       });
     } catch (e) {
       console.error("Video export error:", e);
@@ -406,12 +482,25 @@ export function TaoCompressorSection({
     }
   };
 
+  const handleShareCompressed = () => {
+    if (!nativeCompressedId) return;
+    const filename = `Taocompress_${Date.now()}.mp4`;
+    const ok = shareCompressedVideoNative(nativeCompressedId, filename);
+    if (!ok) {
+      toast({
+        title: "Could not open Share menu",
+        description: "Save the video first, then share it from your Gallery or Movies folder.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const savedPercent = originalSize > 0 && compressedSize > 0
     ? Math.max(0, Math.round(((originalSize - compressedSize) / originalSize) * 100))
     : 0;
 
   return (
-    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm p-4 space-y-4 animate-in fade-in duration-300">
+    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm p-4 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/30 flex items-center justify-center text-primary shrink-0">
@@ -421,11 +510,11 @@ export function TaoCompressorSection({
             <h2 className="text-base font-syne font-bold flex items-center gap-1.5">
               <span>Taocompress</span>
               <Badge className="bg-primary text-primary-foreground text-[9px] font-bold px-1.5 py-0">
-                Video Compressor
+                H.264 MP4
               </Badge>
             </h2>
             <p className="text-[11px] text-muted-foreground">
-              Reduce file size by lowering the video bitrate and output resolution.
+              Compress videos into Messenger, WhatsApp &amp; Gallery-compatible H.264 MP4.
             </p>
           </div>
         </div>
@@ -463,13 +552,15 @@ export function TaoCompressorSection({
             <div className="flex items-center gap-2.5 min-w-0">
               <FileVideo className="w-5 h-5 text-primary shrink-0" />
               <div className="min-w-0">
-                <p className="text-xs font-bold text-foreground truncate">Original Video File</p>
+                <p className="text-xs font-bold text-foreground truncate">
+                  {selectedFile?.name || "Original Video File"}
+                </p>
                 <p className="text-[11px] text-muted-foreground font-mono">{formatBytes(originalSize)}</p>
               </div>
             </div>
 
             {hasCompressed && compressedSize > 0 && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />
                 <div className="text-right">
                   <p className="text-xs font-extrabold text-emerald-400 font-mono">{formatBytes(compressedSize)}</p>
@@ -498,9 +589,9 @@ export function TaoCompressorSection({
                 <div className="absolute inset-0 flex flex-col items-center justify-center p-6 space-y-3 bg-black/80 backdrop-blur-sm rounded-xl">
                   <Loader2 className="w-8 h-8 text-primary animate-spin" />
                   <div className="w-full space-y-1.5 text-center">
-                    <p className="text-xs font-bold text-primary flex items-center justify-between font-mono">
-                      <span>Compressing Video…</span>
-                      <span>{compressProgress}%</span>
+                    <p className="text-xs font-bold text-primary flex items-center justify-between gap-2 font-mono">
+                      <span className="truncate">{compressStatus}</span>
+                      <span className="shrink-0">{compressProgress}%</span>
                     </p>
                     <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
                       <div
@@ -520,12 +611,12 @@ export function TaoCompressorSection({
               type="button"
               onClick={compressVideo}
               disabled={isCompressing}
-              className="w-full h-12 text-sm font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/30 flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
+              className="w-full h-12 text-sm font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/30 flex items-center justify-center gap-2 cursor-pointer"
             >
               {isCompressing ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Compressing Video… {compressProgress}%</span>
+                  <span>Compressing… {compressProgress}%</span>
                 </>
               ) : (
                 <>
@@ -633,7 +724,7 @@ export function TaoCompressorSection({
           {/* Saving Export Progress */}
           {isExporting && (
             <DownloadProgressCard
-              title={`Saving compressed video to ${folderName || getStoredFolderName() || "HutaoTik Downloads"}…`}
+              title={`Saving compressed MP4 to ${folderName || getStoredFolderName() || "HutaoTik Downloads"}…`}
               progress={exportProgress}
               className=""
             />
@@ -641,48 +732,57 @@ export function TaoCompressorSection({
 
           {/* Export Success Visual */}
           {downloadSuccessInfo && !isExporting && (
-            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 animate-in fade-in duration-300">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex items-start gap-3 animate-success-pop">
               <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-extrabold text-emerald-400">Export Complete!</p>
                 <p className="text-[11px] text-foreground truncate mt-0.5">{downloadSuccessInfo.filename}</p>
                 <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
                   <FolderCheck className="w-3 h-3 text-emerald-400 shrink-0" />
-                  Saved in device folder: <strong>{downloadSuccessInfo.folder}</strong>
+                  Saved in Gallery / Movies: <strong>{downloadSuccessInfo.folder}</strong>
                 </p>
               </div>
             </div>
           )}
 
           {/* Actions */}
-          <div className="flex gap-2 pt-1">
+          <div className="flex flex-wrap gap-2 pt-1">
             <Button
               type="button"
               variant="outline"
               onClick={() => {
                 if (videoSrc) URL.revokeObjectURL(videoSrc);
-                if (compressedUrl) URL.revokeObjectURL(compressedUrl);
+                clearCompressedOutput();
+                setSelectedFile(null);
                 setVideoSrc(null);
                 setOriginalSize(0);
-                setCompressedSize(0);
-                setHasCompressed(false);
-                setCompressedBlob(null);
-                setCompressedUrl(null);
-                setDownloadSuccessInfo(null);
                 setCompressProgress(0);
               }}
-              className="h-11 px-4 text-xs font-bold border-border gap-1.5 cursor-pointer"
+              className="h-11 px-3.5 text-xs font-bold border-border gap-1.5 cursor-pointer"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Change Video</span>
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+              <span>Change</span>
             </Button>
+
+            {hasCompressed && nativeCompressedId && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleShareCompressed}
+                disabled={isCompressing || isExporting}
+                className="h-11 px-3.5 text-xs font-bold border-primary/40 text-primary hover:bg-primary/10 gap-1.5 cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5 shrink-0" />
+                <span>Share</span>
+              </Button>
+            )}
 
             {hasCompressed && (
               <Button
                 type="button"
                 onClick={handleDownloadCompressed}
                 disabled={isCompressing || isExporting}
-                className="flex-1 min-w-0 max-w-full overflow-hidden h-11 px-4 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
+                className="flex-1 min-w-[140px] max-w-full overflow-hidden h-11 px-4 text-xs font-bold rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/25 gap-2 cursor-pointer"
               >
                 {isExporting ? (
                   <>
@@ -692,7 +792,7 @@ export function TaoCompressorSection({
                 ) : (
                   <>
                     <Download className="w-4 h-4 shrink-0" />
-                    <span className="min-w-0 truncate">Download Compressed Video</span>
+                    <span className="min-w-0 truncate">Save MP4</span>
                   </>
                 )}
               </Button>

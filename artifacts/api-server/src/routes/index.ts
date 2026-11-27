@@ -16,6 +16,7 @@ import twitterRouter from "./twitter";
 import appUpdatesRouter from "./app-updates";
 import pinterestRouter from "./pinterest";
 import instagramRouter from "./instagram";
+import suggestionsRouter from "./suggestions";
 
 const router: IRouter = Router();
 
@@ -36,5 +37,6 @@ router.use(twitterRouter);
 router.use(appUpdatesRouter);
 router.use(pinterestRouter);
 router.use(instagramRouter);
+router.use(suggestionsRouter);
 
 export default router;

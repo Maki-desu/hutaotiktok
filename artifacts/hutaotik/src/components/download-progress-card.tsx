@@ -1,4 +1,5 @@
-import { ArrowDown } from "lucide-react";
+import { Capacitor } from "@capacitor/core";
+import { ArrowDown, BellRing } from "lucide-react";
 import {
   clampPercent,
   formatProgressDetail,
@@ -18,6 +19,7 @@ export function DownloadProgressCard({
 }: DownloadProgressCardProps) {
   const percent = clampPercent(progress.percent);
   const detail = formatProgressDetail(progress);
+  const isNative = Capacitor.isNativePlatform();
 
   return (
     <div className={`${className} animate-bounce-pop`}>
@@ -46,6 +48,12 @@ export function DownloadProgressCard({
             style={{ width: `${Math.max(percent, 4)}%` }}
           />
         </div>
+        {isNative && (
+          <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <BellRing className="h-3 w-3 shrink-0 text-primary" />
+            <span>Running in background — you can leave the app and watch live progress in notifications.</span>
+          </p>
+        )}
       </div>
     </div>
   );

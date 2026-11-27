@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   AlertTriangle,
+  Archive,
   ArrowUpCircle,
   Bell,
   CheckCircle2,
+  Clock,
   Database,
   Download,
   ExternalLink,
+  FileArchive,
+  Flame,
   Globe,
+  Lightbulb,
   Loader2,
   LogOut,
   Megaphone,
@@ -15,14 +20,29 @@ import {
   Pencil,
   PlayCircle,
   RefreshCw,
+  RotateCcw,
   Send,
   ShieldCheck,
   Smartphone,
+  ThumbsUp,
   Trash2,
+  Upload,
   Users,
+  X,
+  XCircle,
 } from "lucide-react";
 import { apiUrl, saveAdminApiUrl } from "@/lib/api-url";
-import { isDirectApkInstallUrl } from "@/lib/app-updates";
+import { isDirectApkInstallUrl, resolveReleaseDownloadUrl } from "@/lib/app-updates";
+import { formatStorageBytes } from "@/lib/cache-storage";
+import {
+  formatArchiveCountdown,
+  formatRelativeTime,
+  getSuggestionStatusLabel,
+  type SuggestionCounts,
+  type SuggestionItem,
+  type SuggestionSort,
+  type SuggestionStatus,
+} from "@/lib/suggestions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,6 +88,7 @@ type AdminRelease = {
   title: string;
   changelog: string;
   downloadUrl: string;
+  hasUploadedApk?: boolean;
   fileSize: number | null;
   sha256: string | null;
   isMandatory: boolean;
@@ -84,6 +105,7 @@ type FleetStats = {
   activeLast30Days: number;
   pushTokenCount: number;
   firebaseConfigured: boolean;
+  githubUploadConfigured?: boolean;
   latestActiveVersionCode: number | null;
   latestActiveVersionName: string | null;
   upToDateCount: number;
@@ -177,12 +199,68 @@ async function readApiResponse(response: Response): Promise<Record<string, unkno
   return data;
 }
 
+function uploadMultipartWithProgress(
+  url: string,
+  formData: FormData,
+  headers: Record<string, string>,
+  onProgress: (percent: number) => void,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.timeout = 10 * 60 * 1000; // 10 minutes for large APK uploads over mobile connections
+
+    Object.entries(headers).forEach(([key, value]) => {
+      xhr.setRequestHeader(key, value);
+    });
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        const pct = Math.min(99, Math.max(1, Math.round((event.loaded / event.total) * 100)));
+        onProgress(pct);
+      }
+    };
+
+    xhr.onload = () => {
+      const text = xhr.responseText ?? "";
+      let parsed: unknown = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        if (xhr.status === 413) {
+          reject(new Error("APK file is too large for the server limit (max 250 MB)."));
+          return;
+        }
+        if (xhr.status === 503 || xhr.status === 502) {
+          reject(new Error(`The Hutaotik API is waking up or unavailable (HTTP ${xhr.status}). Try again in a moment.`));
+          return;
+        }
+        reject(new Error(`Server returned an unexpected response (HTTP ${xhr.status}).`));
+        return;
+      }
+      resolve({
+        status: xhr.status,
+        data: isRecord(parsed) ? parsed : {},
+      });
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("Network error while uploading the APK. Check your connection and try again."));
+    };
+    xhr.ontimeout = () => {
+      reject(new Error("APK upload timed out. Try again on a faster connection."));
+    };
+
+    xhr.send(formData);
+  });
+}
+
 export default function AdminPublisher() {
   const defaultCodeFromBuild = Number.parseInt(
-    import.meta.env.VITE_DEFAULT_RELEASE_VERSION_CODE ?? "32",
+    import.meta.env.VITE_DEFAULT_RELEASE_VERSION_CODE ?? "36",
     10,
   );
-  const defaultNameFromBuild = import.meta.env.VITE_DEFAULT_RELEASE_VERSION_NAME ?? "1.2.16";
+  const defaultNameFromBuild = import.meta.env.VITE_DEFAULT_RELEASE_VERSION_NAME ?? "1.2.20";
   const hasEmbeddedKey = EMBEDDED_ADMIN_KEY.length > 0;
 
   const [token, setToken] = useState(() => localStorage.getItem("hutaotik_release_admin_token") ?? "");
@@ -208,6 +286,10 @@ export default function AdminPublisher() {
   );
   const [releaseTitle, setReleaseTitle] = useState("");
   const [changelog, setChangelog] = useState("");
+  const [apkDeliveryMode, setApkDeliveryMode] = useState<"upload" | "link">("upload");
+  const [apkFile, setApkFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadStage, setUploadStage] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [sha256, setSha256] = useState("");
   const [isMandatory, setIsMandatory] = useState(false);
@@ -220,6 +302,18 @@ export default function AdminPublisher() {
   const [releases, setReleases] = useState<AdminRelease[]>([]);
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [suggestionCounts, setSuggestionCounts] = useState<SuggestionCounts>({
+    total: 0,
+    reviewing: 0,
+    approved: 0,
+    rejected: 0,
+    archived: 0,
+  });
+  const [suggestionFilter, setSuggestionFilter] = useState<SuggestionStatus>("reviewing");
+  const [suggestionSort, setSuggestionSort] = useState<SuggestionSort>("top");
+  const [busySuggestionId, setBusySuggestionId] = useState<number | null>(null);
+  const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
   const [loadingDb, setLoadingDb] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
 
@@ -273,9 +367,10 @@ export default function AdminPublisher() {
     setDbError(null);
     try {
       const headers = getAdminHeaders(false);
-      const [releasesRes, annRes] = await Promise.all([
+      const [releasesRes, annRes, sugRes] = await Promise.all([
         fetch(apiUrl("/api/admin/app-updates"), { headers, cache: "no-store" }),
         fetch(apiUrl("/api/admin/announcements"), { headers, cache: "no-store" }).catch(() => null),
+        fetch(apiUrl(`/api/admin/suggestions?sort=${suggestionSort}`), { headers, cache: "no-store" }).catch(() => null),
       ]);
 
       if (releasesRes.status === 401) {
@@ -297,7 +392,7 @@ export default function AdminPublisher() {
       setStats(isRecord(data.stats) ? (data.stats as unknown as FleetStats) : null);
 
       const highestDbCode = loadedReleases.reduce((max, item) => Math.max(max, item.versionCode), 0);
-      const baseCode = Math.max(highestDbCode, Number.isSafeInteger(defaultCodeFromBuild) ? defaultCodeFromBuild : 32);
+      const baseCode = Math.max(highestDbCode, Number.isSafeInteger(defaultCodeFromBuild) ? defaultCodeFromBuild : 33);
       setVersionCode((current) => {
         const currentNum = Number.parseInt(current, 10);
         if (!Number.isSafeInteger(currentNum) || currentNum <= highestDbCode) {
@@ -315,12 +410,31 @@ export default function AdminPublisher() {
           setAnnouncements(annData.items as AdminAnnouncement[]);
         }
       }
+
+      if (sugRes && sugRes.ok) {
+        const sugData = await readApiResponse(sugRes);
+        const loadedSuggestions = Array.isArray(sugData.suggestions)
+          ? (sugData.suggestions as SuggestionItem[])
+          : [];
+        setSuggestions(loadedSuggestions);
+        if (isRecord(sugData.counts)) {
+          setSuggestionCounts(sugData.counts as unknown as SuggestionCounts);
+        } else {
+          setSuggestionCounts({
+            total: loadedSuggestions.length,
+            reviewing: loadedSuggestions.filter((s) => s.status === "reviewing").length,
+            approved: loadedSuggestions.filter((s) => s.status === "approved").length,
+            rejected: loadedSuggestions.filter((s) => s.status === "rejected").length,
+            archived: loadedSuggestions.filter((s) => s.status === "archived").length,
+          });
+        }
+      }
     } catch (cause) {
       setDbError(cause instanceof Error ? cause.message : "Could not load the app database.");
     } finally {
       setLoadingDb(false);
     }
-  }, [isUnlocked, getAdminHeaders, defaultCodeFromBuild, handleUnauthorized]);
+  }, [isUnlocked, getAdminHeaders, defaultCodeFromBuild, handleUnauthorized, suggestionSort]);
 
   useEffect(() => {
     if (isUnlocked) {
@@ -403,38 +517,83 @@ export default function AdminPublisher() {
         throw new Error("Enter a valid numeric Android version code.");
       }
 
-      const response = await fetch(
-        apiUrl(isUpdate ? "/api/admin/app-updates" : "/api/admin/announcements"),
-        {
-          method: "POST",
-          headers: getAdminHeaders(true),
-          body: JSON.stringify(
-            isUpdate
-              ? {
-                  versionCode: parsedCode,
-                  versionName: versionName.trim(),
-                  title: releaseTitle.trim(),
-                  changelog: content,
-                  downloadUrl: link,
-                  isMandatory,
-                  minSupportedVersionCode: parsedMinCode,
-                  sha256: sha256.trim() || null,
-                }
-              : {
-                  content: link ? `${content}\n\n${link}` : content,
-                  colorType: announcementColor,
-                  durationDays: announcementPermanent ? undefined : Number.parseInt(announcementDays, 10) || 7,
-                  isPermanent: announcementPermanent,
-                },
-          ),
-        },
-      );
-      const data = await readApiResponse(response);
-      if (response.status === 401) {
+      if (isUpdate && !apkFile && link.length === 0) {
+        throw new Error("Upload a new .apk file, or switch to External Link to paste a download URL.");
+      }
+
+      let statusCode = 200;
+      let data: Record<string, unknown>;
+
+      if (isUpdate && apkFile) {
+        const formData = new FormData();
+        formData.append("apk", apkFile, apkFile.name || `hutaotik-${versionName.trim() || "update"}.apk`);
+        formData.append("versionCode", String(parsedCode));
+        formData.append("versionName", versionName.trim());
+        formData.append("title", releaseTitle.trim());
+        formData.append("changelog", content);
+        formData.append("isMandatory", String(isMandatory));
+        if (parsedMinCode !== null) {
+          formData.append("minSupportedVersionCode", String(parsedMinCode));
+        }
+        if (sha256.trim()) {
+          formData.append("sha256", sha256.trim());
+        }
+
+        setUploadProgress(1);
+        setUploadStage(`Uploading ${apkFile.name} (${formatStorageBytes(apkFile.size)})…`);
+
+        const uploadResult = await uploadMultipartWithProgress(
+          apiUrl("/api/admin/app-updates"),
+          formData,
+          getAdminHeaders(false),
+          (pct) => {
+            setUploadProgress(pct);
+            if (pct >= 99) {
+              setUploadStage("Processing APK & computing SHA-256 checksum…");
+            } else {
+              setUploadStage(`Uploading APK… ${pct}%`);
+            }
+          },
+        );
+        statusCode = uploadResult.status;
+        data = uploadResult.data;
+        setUploadProgress(100);
+      } else {
+        const response = await fetch(
+          apiUrl(isUpdate ? "/api/admin/app-updates" : "/api/admin/announcements"),
+          {
+            method: "POST",
+            headers: getAdminHeaders(true),
+            body: JSON.stringify(
+              isUpdate
+                ? {
+                    versionCode: parsedCode,
+                    versionName: versionName.trim(),
+                    title: releaseTitle.trim(),
+                    changelog: content,
+                    downloadUrl: link,
+                    isMandatory,
+                    minSupportedVersionCode: parsedMinCode,
+                    sha256: sha256.trim() || null,
+                  }
+                : {
+                    content: link ? `${content}\n\n${link}` : content,
+                    colorType: announcementColor,
+                    durationDays: announcementPermanent ? undefined : Number.parseInt(announcementDays, 10) || 7,
+                    isPermanent: announcementPermanent,
+                  },
+            ),
+          },
+        );
+        statusCode = response.status;
+        data = await readApiResponse(response);
+      }
+
+      if (statusCode === 401) {
         handleUnauthorized();
         return;
       }
-      if (!response.ok) {
+      if (statusCode < 200 || statusCode >= 300) {
         throw new Error(
           typeof data.error === "string"
             ? data.error
@@ -445,8 +604,15 @@ export default function AdminPublisher() {
       if (isUpdate) {
         const publishedRelease = data.release as AdminRelease;
         const push = data.push as PushStatus | undefined;
+        const storageMode = typeof data.storageMode === "string" ? data.storageMode : "external";
+        const hostNote =
+          storageMode === "github"
+            ? " (APK hosted permanently on GitHub Releases)"
+            : storageMode === "server"
+              ? " (APK uploaded & hosted directly on your API server)"
+              : "";
         setResult({
-          message: `Published v${publishedRelease.versionName} (Build ${publishedRelease.versionCode}) to the App Database!`,
+          message: `Published v${publishedRelease.versionName} (Build ${publishedRelease.versionCode})${hostNote}!`,
           push,
           warning: typeof data.warning === "string" ? data.warning : undefined,
         });
@@ -454,12 +620,17 @@ export default function AdminPublisher() {
         setVersionName(bumpPatch(publishedRelease.versionName));
         setReleaseTitle("");
         setChangelog("");
+        setApkFile(null);
         setDownloadUrl("");
         setSha256("");
         setIsMandatory(false);
         setMinSupportedCode("");
       } else {
-        setResult({ message: "Lobby announcement published to every HutaoTik user." });
+        const annPush = isRecord(data.push) ? (data.push as unknown as PushStatus) : undefined;
+        setResult({
+          message: "Lobby announcement published! HutaoTik devices will notify users automatically.",
+          push: annPush && annPush.status !== "not_configured" ? annPush : undefined,
+        });
         setChangelog("");
         setDownloadUrl("");
       }
@@ -468,6 +639,8 @@ export default function AdminPublisher() {
       setError(cause instanceof Error ? cause.message : "Could not publish.");
     } finally {
       setBusy(false);
+      setUploadProgress(null);
+      setUploadStage("");
     }
   };
 
@@ -501,7 +674,7 @@ export default function AdminPublisher() {
     setEditTitle(release.title || "");
     setEditVersionName(release.versionName);
     setEditChangelog(release.changelog);
-    setEditDownloadUrl(release.downloadUrl);
+    setEditDownloadUrl(release.hasUploadedApk ? "" : release.downloadUrl);
     setEditSha256(release.sha256 || "");
     setEditMandatory(release.isMandatory);
     setEditMinSupported(
@@ -515,20 +688,23 @@ export default function AdminPublisher() {
     setSavingEdit(true);
     setDbError(null);
     try {
+      const payload: Record<string, unknown> = {
+        title: editTitle.trim(),
+        versionName: editVersionName.trim(),
+        changelog: editChangelog.trim(),
+        sha256: editSha256.trim() || null,
+        isMandatory: editMandatory,
+        minSupportedVersionCode: editMinSupported.trim()
+          ? Number.parseInt(editMinSupported.trim(), 10)
+          : null,
+      };
+      if (editDownloadUrl.trim().length > 0 || !editingRelease.hasUploadedApk) {
+        payload.downloadUrl = editDownloadUrl.trim();
+      }
       const response = await fetch(apiUrl(`/api/admin/app-updates/${editingRelease.id}`), {
         method: "PATCH",
         headers: getAdminHeaders(true),
-        body: JSON.stringify({
-          title: editTitle.trim(),
-          versionName: editVersionName.trim(),
-          changelog: editChangelog.trim(),
-          downloadUrl: editDownloadUrl.trim(),
-          sha256: editSha256.trim() || null,
-          isMandatory: editMandatory,
-          minSupportedVersionCode: editMinSupported.trim()
-            ? Number.parseInt(editMinSupported.trim(), 10)
-            : null,
-        }),
+        body: JSON.stringify(payload),
       });
       if (response.status === 401) {
         handleUnauthorized();
@@ -636,6 +812,72 @@ export default function AdminPublisher() {
     }
   };
 
+  const updateSuggestionStatus = async (suggestion: SuggestionItem, status: SuggestionStatus) => {
+    setBusySuggestionId(suggestion.id);
+    setDbError(null);
+    try {
+      const noteValue =
+        noteDrafts[suggestion.id] !== undefined
+          ? noteDrafts[suggestion.id]
+          : suggestion.adminNote ?? "";
+
+      const response = await fetch(apiUrl(`/api/admin/suggestions/${suggestion.id}`), {
+        method: "PATCH",
+        headers: getAdminHeaders(true),
+        body: JSON.stringify({
+          status,
+          adminNote: noteValue.trim() || null,
+        }),
+      });
+      if (response.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await readApiResponse(response);
+      if (!response.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Could not update suggestion status.",
+        );
+      }
+      setNoteDrafts((prev) => {
+        const next = { ...prev };
+        delete next[suggestion.id];
+        return next;
+      });
+      await loadDatabase();
+    } catch (cause) {
+      setDbError(cause instanceof Error ? cause.message : "Could not update suggestion.");
+    } finally {
+      setBusySuggestionId(null);
+    }
+  };
+
+  const deleteSuggestion = async (id: number) => {
+    setBusySuggestionId(id);
+    setDbError(null);
+    try {
+      const response = await fetch(apiUrl(`/api/admin/suggestions/${id}`), {
+        method: "DELETE",
+        headers: getAdminHeaders(false),
+      });
+      if (response.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await readApiResponse(response);
+      if (!response.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Could not delete suggestion.",
+        );
+      }
+      await loadDatabase();
+    } catch (cause) {
+      setDbError(cause instanceof Error ? cause.message : "Could not delete suggestion.");
+    } finally {
+      setBusySuggestionId(null);
+    }
+  };
+
   const signOut = () => {
     localStorage.removeItem("hutaotik_release_admin_token");
     setToken("");
@@ -646,7 +888,8 @@ export default function AdminPublisher() {
   };
 
   const directApkPreview =
-    downloadUrl.trim().length > 0 && isDirectApkInstallUrl(downloadUrl.trim(), `${serverUrl}/`);
+    Boolean(apkFile) ||
+    (downloadUrl.trim().length > 0 && isDirectApkInstallUrl(downloadUrl.trim(), `${serverUrl}/`));
 
   return (
     <main className="min-h-screen bg-background px-4 py-6 pb-16 pt-safe text-foreground">
@@ -823,18 +1066,27 @@ export default function AdminPublisher() {
             )}
 
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-3 rounded-2xl border border-border bg-card p-1">
-                <TabsTrigger value="publish" className="gap-1.5 rounded-xl text-xs font-bold">
-                  <Send className="h-3.5 w-3.5" />
-                  Publish
+              <TabsList className="grid w-full grid-cols-4 rounded-2xl border border-border bg-card p-1">
+                <TabsTrigger value="publish" className="gap-1 rounded-xl px-1.5 text-[11px] font-bold sm:text-xs">
+                  <Send className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Publish</span>
                 </TabsTrigger>
-                <TabsTrigger value="releases" className="gap-1.5 rounded-xl text-xs font-bold">
-                  <Database className="h-3.5 w-3.5" />
-                  Releases ({releases.length})
+                <TabsTrigger value="releases" className="gap-1 rounded-xl px-1.5 text-[11px] font-bold sm:text-xs">
+                  <Database className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">DB ({releases.length})</span>
                 </TabsTrigger>
-                <TabsTrigger value="fleet" className="gap-1.5 rounded-xl text-xs font-bold">
-                  <Users className="h-3.5 w-3.5" />
-                  Users
+                <TabsTrigger value="suggestions" className="gap-1 rounded-xl px-1.5 text-[11px] font-bold sm:text-xs">
+                  <Lightbulb className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Box</span>
+                  {suggestionCounts.reviewing > 0 && (
+                    <span className="rounded-full bg-amber-500/20 px-1.5 py-0.5 font-mono text-[10px] text-amber-400">
+                      {suggestionCounts.reviewing}
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="fleet" className="gap-1 rounded-xl px-1.5 text-[11px] font-bold sm:text-xs">
+                  <Users className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Users</span>
                 </TabsTrigger>
               </TabsList>
 
@@ -953,44 +1205,189 @@ export default function AdminPublisher() {
                         />
                       </div>
 
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <Label htmlFor="release-download-url" className="text-xs">
-                            {mode === "update" ? "APK Download Link (HTTPS)" : "Link (optional)"}
-                          </Label>
-                          {mode === "update" && downloadUrl.trim() && (
+                      {mode === "update" ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-xs">APK Package Source</Label>
                             <Badge
                               variant="outline"
                               className={`text-[10px] ${
                                 directApkPreview
                                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
-                                  : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                                  : "border-border text-muted-foreground"
                               }`}
                             >
-                              {directApkPreview ? "Direct APK · In-app installer" : "Share link · Opens browser"}
+                              {apkFile
+                                ? "Direct APK · Auto SHA-256"
+                                : downloadUrl.trim()
+                                  ? directApkPreview
+                                    ? "Direct APK · In-app installer"
+                                    : "Share link · Opens browser"
+                                  : "No link needed for upload"}
                             </Badge>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-border bg-background/60 p-1">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setApkDeliveryMode("upload");
+                                setError(null);
+                              }}
+                              className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold transition-colors ${
+                                apkDeliveryMode === "upload"
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              <Upload className="h-3.5 w-3.5" />
+                              Upload APK File
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setApkDeliveryMode("link");
+                                setError(null);
+                              }}
+                              className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold transition-colors ${
+                                apkDeliveryMode === "link"
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              <Globe className="h-3.5 w-3.5" />
+                              Download Link (Optional)
+                            </button>
+                          </div>
+
+                          {apkDeliveryMode === "upload" ? (
+                            <div className="space-y-2.5">
+                              {apkFile ? (
+                                <div className="flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3">
+                                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
+                                    <FileArchive className="h-5 w-5" />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-xs font-bold text-foreground">
+                                      {apkFile.name}
+                                    </p>
+                                    <p className="text-[11px] text-emerald-400">
+                                      {formatStorageBytes(apkFile.size)} · Ready to upload directly (no link needed)
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => setApkFile(null)}
+                                    aria-label="Remove selected APK file"
+                                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-background/60 hover:text-destructive disabled:opacity-50"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <label
+                                  className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-5 text-center transition-colors hover:border-primary/70 hover:bg-primary/10 ${
+                                    busy ? "pointer-events-none opacity-60" : ""
+                                  }`}
+                                >
+                                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+                                    <Upload className="h-5 w-5" />
+                                  </div>
+                                  <div className="space-y-0.5">
+                                    <p className="text-xs font-bold text-foreground">
+                                      Tap to select your new <span className="font-mono text-primary">.apk</span> file
+                                    </p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      Users download &amp; install directly inside HutaoTik · Max 250 MB
+                                    </p>
+                                  </div>
+                                  <input
+                                    type="file"
+                                    accept=".apk,application/vnd.android.package-archive,application/octet-stream,*/*"
+                                    className="sr-only"
+                                    disabled={busy}
+                                    onChange={(event) => {
+                                      const file = event.currentTarget.files?.[0] ?? null;
+                                      if (file) {
+                                        if (!file.name.toLowerCase().endsWith(".apk")) {
+                                          setError("Please select an Android .apk file (e.g. hutaotik.apk).");
+                                        } else {
+                                          setApkFile(file);
+                                          setError(null);
+                                        }
+                                      }
+                                      event.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                              )}
+
+                              {uploadProgress !== null && (
+                                <div className="space-y-1.5 rounded-xl border border-primary/30 bg-primary/5 p-3">
+                                  <div className="flex items-center justify-between text-[11px] font-semibold">
+                                    <span className="truncate text-foreground">{uploadStage || "Uploading APK…"}</span>
+                                    <span className="font-mono text-primary">{uploadProgress}%</span>
+                                  </div>
+                                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                                    <div
+                                      className="h-full rounded-full bg-primary transition-all duration-200"
+                                      style={{ width: `${uploadProgress}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              <p className="text-[11px] text-muted-foreground">
+                                {stats?.githubUploadConfigured
+                                  ? "Permanent hosting active: uploaded APKs are automatically mirrored to GitHub Releases CDN."
+                                  : "Uploads directly to your Hutaotik API server with auto SHA-256 verification. (Optional: add GITHUB_TOKEN on Render to auto-mirror uploads permanently to GitHub Releases.)"}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <Input
+                                id="release-download-url"
+                                type="url"
+                                inputMode="url"
+                                autoCapitalize="none"
+                                value={downloadUrl}
+                                onChange={(e) => {
+                                  setDownloadUrl(e.target.value);
+                                  if (e.target.value.trim().length > 0 && apkFile) {
+                                    setApkFile(null);
+                                  }
+                                }}
+                                placeholder="https://github.com/.../releases/download/v1.2.19/hutaotik.apk"
+                                required={!apkFile}
+                              />
+                              <p className="text-[11px] text-muted-foreground">
+                                Optional alternative: paste a direct .apk URL (in-app installer) or Google Drive / MediaFire share link (opens browser).
+                              </p>
+                            </div>
                           )}
                         </div>
-                        <Input
-                          id="release-download-url"
-                          type="url"
-                          inputMode="url"
-                          autoCapitalize="none"
-                          value={downloadUrl}
-                          onChange={(e) => setDownloadUrl(e.target.value)}
-                          placeholder={
-                            mode === "update"
-                              ? "https://github.com/.../releases/download/v1.2.15/hutaotik.apk"
-                              : "https://..."
-                          }
-                          required={mode === "update"}
-                        />
-                        <p className="text-[11px] text-muted-foreground">
-                          {mode === "update"
-                            ? "Tip: Direct .apk links (like GitHub Releases) download inside HutaoTik with a live progress bar and open Android's installer automatically. Google Drive / MediaFire links open in the browser."
-                            : "Optional HTTPS link rendered as clickable text in the lobby."}
-                        </p>
-                      </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <Label htmlFor="release-download-url" className="text-xs">
+                            Link (optional)
+                          </Label>
+                          <Input
+                            id="release-download-url"
+                            type="url"
+                            inputMode="url"
+                            autoCapitalize="none"
+                            value={downloadUrl}
+                            onChange={(e) => setDownloadUrl(e.target.value)}
+                            placeholder="https://..."
+                          />
+                          <p className="text-[11px] text-muted-foreground">
+                            Optional HTTPS link rendered as clickable text in the lobby.
+                          </p>
+                        </div>
+                      )}
 
                       {mode === "update" ? (
                         <div className="space-y-3 rounded-xl border border-border bg-background/60 p-3">
@@ -1033,7 +1430,7 @@ export default function AdminPublisher() {
                                 id="release-sha256"
                                 value={sha256}
                                 onChange={(e) => setSha256(e.target.value)}
-                                placeholder="64-char hex checksum"
+                                placeholder={apkFile ? "Auto-calculated from uploaded APK" : "64-char hex checksum"}
                                 maxLength={64}
                                 className="h-9 font-mono text-xs"
                               />
@@ -1098,12 +1495,18 @@ export default function AdminPublisher() {
                         {busy ? (
                           <>
                             <Loader2 className="h-4 w-4 animate-spin" />
-                            Publishing…
+                            {uploadProgress !== null
+                              ? uploadProgress >= 99
+                                ? "Finalizing APK…"
+                                : `Uploading APK (${uploadProgress}%)…`
+                              : "Publishing…"}
                           </>
                         ) : mode === "update" ? (
                           <>
-                            <ArrowUpCircle className="h-4 w-4" />
-                            Publish v{versionName || "?"} to All Users
+                            {apkFile ? <Upload className="h-4 w-4" /> : <ArrowUpCircle className="h-4 w-4" />}
+                            {apkFile
+                              ? `Upload APK & Publish v${versionName || "?"}`
+                              : `Publish v${versionName || "?"} to All Users`}
                           </>
                         ) : (
                           <>
@@ -1210,6 +1613,11 @@ export default function AdminPublisher() {
                                     Paused
                                   </Badge>
                                 )}
+                                {rel.hasUploadedApk && (
+                                  <Badge variant="outline" className="border-primary/35 bg-primary/10 text-[10px] text-primary">
+                                    Hosted APK
+                                  </Badge>
+                                )}
                                 {rel.isMandatory && (
                                   <Badge variant="destructive" className="text-[10px]">
                                     Mandatory
@@ -1223,6 +1631,7 @@ export default function AdminPublisher() {
                                 Published {formatDate(rel.createdAt)} ·{" "}
                                 <span className="font-semibold text-foreground">{rel.downloadCount}</span>{" "}
                                 download{rel.downloadCount === 1 ? "" : "s"}
+                                {rel.fileSize ? ` · ${formatStorageBytes(rel.fileSize)}` : ""}
                                 {index === 0 ? "" : ""}
                               </p>
                             </div>
@@ -1239,12 +1648,14 @@ export default function AdminPublisher() {
                               <Globe className="h-3.5 w-3.5 shrink-0 text-amber-400" />
                             )}
                             <a
-                              href={rel.downloadUrl}
+                              href={resolveReleaseDownloadUrl(rel.downloadUrl, `${serverUrl}/`).toString()}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="min-w-0 flex-1 truncate underline underline-offset-2 hover:text-primary"
                             >
-                              {rel.downloadUrl}
+                              {rel.hasUploadedApk
+                                ? `Direct APK upload (${rel.downloadUrl})`
+                                : rel.downloadUrl}
                             </a>
                             <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
                           </div>
@@ -1484,6 +1895,266 @@ export default function AdminPublisher() {
                   </CardContent>
                 </Card>
               </TabsContent>
+
+              {/* ── TAB 4: SUGGESTION BOX ────────────────────────────── */}
+              <TabsContent value="suggestions" className="mt-4 space-y-4">
+                <Card className="rounded-2xl border-border bg-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Lightbulb className="h-4 w-4 text-primary" />
+                      Suggestion Box
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Review feature ideas sent from HutaoTik. Approve or reject them below — unnoticed suggestions automatically move to the Archive after 3 days.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Sub-filter bar */}
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {(
+                        [
+                          { key: "reviewing", label: "Inbox", count: suggestionCounts.reviewing },
+                          { key: "approved", label: "Approved", count: suggestionCounts.approved },
+                          { key: "rejected", label: "Rejected", count: suggestionCounts.rejected },
+                          { key: "archived", label: "Archive", count: suggestionCounts.archived },
+                        ] as const
+                      ).map((tab) => {
+                        const isActive = suggestionFilter === tab.key;
+                        return (
+                          <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setSuggestionFilter(tab.key)}
+                            className={`flex flex-col items-center justify-center rounded-xl border px-2 py-2 text-center transition-colors ${
+                              isActive
+                                ? "border-primary bg-primary/15 text-primary"
+                                : "border-border bg-background/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                            }`}
+                          >
+                            <span className="text-[11px] font-bold">{tab.label}</span>
+                            <span className="mt-0.5 font-mono text-xs font-extrabold">{tab.count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Sort bar */}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-muted-foreground">
+                        Sort suggestions
+                      </span>
+                      <div className="inline-flex rounded-xl border border-border bg-background/60 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setSuggestionSort("top")}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                            suggestionSort === "top"
+                              ? "bg-primary text-primary-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Flame className="h-3 w-3" />
+                          Most Upvoted
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSuggestionSort("newest")}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                            suggestionSort === "newest"
+                              ? "bg-primary text-primary-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Clock className="h-3 w-3" />
+                          Newest
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Filtered suggestions list */}
+                    {(() => {
+                      const visibleSuggestions = suggestions
+                        .filter((item) => item.status === suggestionFilter)
+                        .sort((a, b) => {
+                          if (suggestionSort === "top" && b.upvotes !== a.upvotes) {
+                            return b.upvotes - a.upvotes;
+                          }
+                          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                        });
+                      if (visibleSuggestions.length === 0) {
+                        return (
+                          <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                            {suggestionFilter === "reviewing"
+                              ? "All caught up! No pending suggestions waiting for review."
+                              : suggestionFilter === "archived"
+                                ? "Archive is empty. Suggestions left unnoticed for 3 days automatically appear here."
+                                : `No ${getSuggestionStatusLabel(suggestionFilter).toLowerCase()} suggestions yet.`}
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-3">
+                          {visibleSuggestions.map((item) => {
+                            const isItemBusy = busySuggestionId === item.id;
+                            const countdown =
+                              item.status === "reviewing"
+                                ? formatArchiveCountdown(item.autoArchiveAt)
+                                : null;
+                            const noteValue =
+                              noteDrafts[item.id] !== undefined
+                                ? noteDrafts[item.id]
+                                : item.adminNote ?? "";
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="space-y-3 rounded-xl border border-border bg-background/60 p-3.5"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-bold text-foreground">
+                                      {item.authorName}
+                                    </p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      {formatRelativeTime(item.createdAt)}
+                                      {countdown ? ` • ${countdown}` : ""}
+                                      {item.status === "archived" && item.archivedAt
+                                        ? ` • Archived ${formatRelativeTime(item.archivedAt)}`
+                                        : ""}
+                                    </p>
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1.5">
+                                    <Badge
+                                      variant="outline"
+                                      className="gap-1 border-primary/30 bg-primary/10 font-mono text-[10px] font-bold text-primary"
+                                    >
+                                      <ThumbsUp className="h-2.5 w-2.5" />
+                                      {item.upvotes}
+                                    </Badge>
+                                    {item.status === "approved" ? (
+                                      <Badge className="gap-1 border border-emerald-500/35 bg-emerald-500/15 text-[10px] text-emerald-400">
+                                        <CheckCircle2 className="h-3 w-3" />
+                                        Approved
+                                      </Badge>
+                                    ) : item.status === "rejected" ? (
+                                      <Badge className="gap-1 border border-rose-500/35 bg-rose-500/15 text-[10px] text-rose-400">
+                                        <XCircle className="h-3 w-3" />
+                                        Rejected
+                                      </Badge>
+                                    ) : item.status === "archived" ? (
+                                      <Badge variant="outline" className="gap-1 text-[10px] text-muted-foreground">
+                                        <Archive className="h-3 w-3" />
+                                        Archived
+                                      </Badge>
+                                    ) : (
+                                      <Badge className="gap-1 border border-amber-500/35 bg-amber-500/15 text-[10px] text-amber-400">
+                                        <Clock className="h-3 w-3" />
+                                        Reviewing
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
+                                  {item.content}
+                                </p>
+
+                                <Input
+                                  value={noteValue}
+                                  onChange={(e) =>
+                                    setNoteDrafts((prev) => ({
+                                      ...prev,
+                                      [item.id]: e.target.value,
+                                    }))
+                                  }
+                                  maxLength={500}
+                                  placeholder="Optional admin reply (shown to users)…"
+                                  className="h-9 rounded-lg bg-card text-xs"
+                                  disabled={isItemBusy}
+                                />
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {item.status !== "approved" && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={isItemBusy}
+                                      onClick={() => void updateSuggestionStatus(item, "approved")}
+                                      className="h-8 gap-1 rounded-lg bg-emerald-600 px-3 text-xs font-bold text-white hover:bg-emerald-500"
+                                    >
+                                      {isItemBusy ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      ) : (
+                                        <CheckCircle2 className="h-3.5 w-3.5" />
+                                      )}
+                                      Approve
+                                    </Button>
+                                  )}
+
+                                  {item.status !== "rejected" && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="destructive"
+                                      disabled={isItemBusy}
+                                      onClick={() => void updateSuggestionStatus(item, "rejected")}
+                                      className="h-8 gap-1 rounded-lg px-3 text-xs font-bold"
+                                    >
+                                      <XCircle className="h-3.5 w-3.5" />
+                                      Reject
+                                    </Button>
+                                  )}
+
+                                  {item.status === "reviewing" && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={isItemBusy}
+                                      onClick={() => void updateSuggestionStatus(item, "archived")}
+                                      className="h-8 gap-1 rounded-lg px-2.5 text-xs"
+                                    >
+                                      <Archive className="h-3.5 w-3.5" />
+                                      Archive
+                                    </Button>
+                                  )}
+
+                                  {item.status !== "reviewing" && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={isItemBusy}
+                                      onClick={() => void updateSuggestionStatus(item, "reviewing")}
+                                      className="h-8 gap-1 rounded-lg px-2.5 text-xs"
+                                    >
+                                      <RotateCcw className="h-3.5 w-3.5" />
+                                      Reviewing
+                                    </Button>
+                                  )}
+
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    disabled={isItemBusy}
+                                    onClick={() => void deleteSuggestion(item.id)}
+                                    title="Delete suggestion"
+                                    className="ml-auto h-8 w-8 text-destructive hover:bg-destructive/15"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </CardContent>
+                </Card>
+              </TabsContent>
             </Tabs>
           </>
         )}
@@ -1533,13 +2204,22 @@ export default function AdminPublisher() {
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="edit-url" className="text-xs">HTTPS APK Download Link</Label>
+              <Label htmlFor="edit-url" className="text-xs">
+                {editingRelease?.hasUploadedApk
+                  ? "Replace Hosted APK with HTTPS Link (optional)"
+                  : "HTTPS APK Download Link"}
+              </Label>
               <Input
                 id="edit-url"
                 type="url"
                 value={editDownloadUrl}
                 onChange={(e) => setEditDownloadUrl(e.target.value)}
-                required
+                placeholder={
+                  editingRelease?.hasUploadedApk
+                    ? "Leave blank to keep uploaded APK on server"
+                    : "https://..."
+                }
+                required={!editingRelease?.hasUploadedApk}
               />
             </div>
             <div className="space-y-1">

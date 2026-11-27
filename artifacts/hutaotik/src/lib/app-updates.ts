@@ -43,9 +43,9 @@ const CHECKIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const progressListeners = new Set<(event: AppUpdateProgressEvent) => void>();
 
 export function getInstalledAppVersion(): { versionCode: number; versionName: string } {
-  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "32", 10);
-  const versionCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 32;
-  const versionName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.16").trim() || "1.2.16";
+  const parsedCode = Number.parseInt(import.meta.env.VITE_APP_VERSION_CODE ?? "36", 10);
+  const versionCode = Number.isSafeInteger(parsedCode) && parsedCode > 0 ? parsedCode : 36;
+  const versionName = (import.meta.env.VITE_APP_VERSION_NAME ?? "1.2.20").trim() || "1.2.20";
   return { versionCode, versionName };
 }
 

@@ -29,6 +29,8 @@ import {
   FolderCheck,
   CheckCircle2,
   ChevronDown,
+  ClipboardCheck,
+  X,
 } from "lucide-react";
 import { SiTiktok, SiFacebook, SiYoutube, SiX, SiPinterest, SiInstagram } from "react-icons/si";
 import { FacebookSection } from "@/components/facebook-section";
@@ -60,6 +62,16 @@ import {
 } from "@/lib/download-progress";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { saveLocalHistoryRecord } from "@/lib/local-history";
+import { readClipboardLinkQuietly, type DetectedClipboardLink } from "@/lib/clipboard-link";
+import {
+  downloadUrlInBackgroundNative,
+  isNativeBackgroundDownloadAvailable,
+} from "@/lib/background-download";
+import {
+  finishLiveDownloadNotif,
+  startLiveDownloadNotif,
+  updateLiveDownloadNotif,
+} from "@/lib/notifications";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Home() {
@@ -95,6 +107,8 @@ export default function Home() {
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFetchTime = useRef<number>(0);
   const lastSharedUrl = useRef<{ url: string; at: number } | null>(null);
+  const dismissedClipboardUrlsRef = useRef<Set<string>>(new Set());
+  const [clipboardLink, setClipboardLink] = useState<DetectedClipboardLink | null>(null);
 
   const { data: publicSettings } = useGetPublicSettings({
     query: { queryKey: getGetPublicSettingsQueryKey() },
@@ -322,6 +336,83 @@ export default function Home() {
     };
   }, []);
 
+  // Quietly detect a supported video link in the clipboard on launch or foreground resume
+  useEffect(() => {
+    let active = true;
+
+    const inspectClipboard = async () => {
+      const detected = await readClipboardLinkQuietly();
+      if (!active) return;
+      if (!detected) {
+        setClipboardLink(null);
+        return;
+      }
+      if (dismissedClipboardUrlsRef.current.has(detected.url)) {
+        return;
+      }
+      setClipboardLink(detected);
+    };
+
+    void inspectClipboard();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void inspectClipboard();
+      }
+    };
+    const handleFocus = () => {
+      void inspectClipboard();
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    const handles: Array<{ remove?: () => Promise<void> }> = [];
+    if (typeof window !== "undefined" && (window as any).Capacitor?.Plugins?.App) {
+      Promise.resolve(
+        (window as any).Capacitor.Plugins.App.addListener(
+          "appStateChange",
+          (state: { isActive: boolean }) => {
+            if (state?.isActive) void inspectClipboard();
+          },
+        ),
+      )
+        .then((handle) => {
+          if (handle) handles.push(handle);
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      active = false;
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      handles.forEach((handle) => {
+        void handle.remove?.();
+      });
+    };
+  }, []);
+
+  const showClipboardBanner =
+    clipboardLink !== null &&
+    clipboardLink.url !== url.trim() &&
+    clipboardLink.url !== submittedUrl.trim();
+
+  const handleAcceptClipboardLink = () => {
+    if (!clipboardLink) return;
+    const target = clipboardLink.url;
+    dismissedClipboardUrlsRef.current.add(target);
+    setClipboardLink(null);
+    setUrl(target);
+    handleFetch(target);
+  };
+
+  const handleDismissClipboardLink = () => {
+    if (!clipboardLink) return;
+    dismissedClipboardUrlsRef.current.add(clipboardLink.url);
+    setClipboardLink(null);
+  };
+
   const video = fetchMutation.data;
   const isLoading = fetchMutation.isPending;
   const getVideoDownloadUrl = (qualityOption: "hd" | "normal" | "low") => {
@@ -401,18 +492,31 @@ export default function Home() {
       const requestUrl = apiUrl(
         `/api/proxy-download?${new URLSearchParams({ url: downloadUrl, filename }).toString()}`
       );
-      const res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
-      if (!res.ok) throw new Error("Server returned HTTP " + res.status);
+      const mimeType = quality === "audio" ? "audio/mpeg" : "video/mp4";
 
-      const blob = await fetchBlobWithProgress(res, setDownloadProgress, {
-        startPercent: 2,
-        endPercent: 88,
-        status: quality === "audio" ? "Downloading TikTok audio…" : "Downloading TikTok video…",
-      });
-      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
-        startPercent: 88,
-        endPercent: 100,
-      });
+      if (isNativeBackgroundDownloadAvailable() && requestUrl.startsWith("https://")) {
+        await downloadUrlInBackgroundNative({
+          url: requestUrl,
+          filename,
+          folderName,
+          title: `TikTok · ${safeTitle || video.authorUsername || "Video"}`,
+          mimeType,
+          onProgress: setDownloadProgress,
+        });
+      } else {
+        const res = await fetch(requestUrl, { referrerPolicy: "no-referrer" });
+        if (!res.ok) throw new Error("Server returned HTTP " + res.status);
+
+        const blob = await fetchBlobWithProgress(res, setDownloadProgress, {
+          startPercent: 2,
+          endPercent: 88,
+          status: quality === "audio" ? "Downloading TikTok audio…" : "Downloading TikTok video…",
+        });
+        await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+          startPercent: 88,
+          endPercent: 100,
+        });
+      }
 
       saveLocalHistoryRecord({
         title: video.title || "TikTok Video",
@@ -454,6 +558,12 @@ export default function Home() {
     setIsZipping(true);
     setDownloadProgress({ percent: 0, status: `Downloading 0 of ${video.photos.length} photos…` });
     setDownloadSuccessInfo(null);
+    const zipTaskId = `tiktok-zip-${Date.now()}`;
+    startLiveDownloadNotif(
+      zipTaskId,
+      `TikTok Photos (${video.photos.length} items)`,
+      folderName,
+    );
 
     try {
       const JSZip = (await import("jszip")).default;
@@ -502,10 +612,12 @@ export default function Home() {
             /* skip failed photo */
           }
           completedPhotos++;
-          setDownloadProgress({
+          const photoProgress: DownloadProgressState = {
             percent: Math.round((completedPhotos / totalPhotos) * 72),
             status: `Downloaded ${completedPhotos} of ${totalPhotos} photos…`,
-          });
+          };
+          setDownloadProgress(photoProgress);
+          updateLiveDownloadNotif(zipTaskId, photoProgress);
         }),
       );
 
@@ -514,26 +626,34 @@ export default function Home() {
       }
 
       const blob = await zip.generateAsync({ type: "blob" }, (metadata) => {
-        setDownloadProgress({
+        const zipProgress: DownloadProgressState = {
           percent: 72 + Math.round((metadata.percent / 100) * 16),
           status: `Packaging ${savedPhotos} photos into ZIP…`,
-        });
+        };
+        setDownloadProgress(zipProgress);
+        updateLiveDownloadNotif(zipTaskId, zipProgress);
       });
       const safeTitle = (video.title || "photos").replace(/[^a-z0-9\s]/gi, "").trim() || "photos";
       const filename = `${safeTitle}.zip`;
 
-      await saveBlobToDevice(blob, filename, folderName, setDownloadProgress, {
+      await saveBlobToDevice(blob, filename, folderName, (p) => {
+        setDownloadProgress(p);
+        updateLiveDownloadNotif(zipTaskId, p);
+      }, {
         startPercent: 88,
         endPercent: 100,
       });
 
+      finishLiveDownloadNotif(zipTaskId, true, filename, folderName);
       setDownloadSuccessInfo({ filename, folder: folderName });
 
       toast({
         title: "ZIP Download Complete!",
         description: `Your download is complete and saved to Documents/${folderName}/${filename}`,
       });
-    } catch {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "ZIP creation failed";
+      finishLiveDownloadNotif(zipTaskId, false, "photos.zip", folderName, msg);
       toast({ title: "ZIP creation failed", variant: "destructive" });
     } finally {
       setIsZipping(false);
@@ -640,6 +760,41 @@ export default function Home() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {showClipboardBanner && clipboardLink && (
+          <div
+            data-testid="clipboard-banner"
+            className="animate-bounce-pop flex items-center gap-2.5 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2.5 shadow-sm"
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
+              <ClipboardCheck className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold text-foreground leading-tight">
+                Copied {clipboardLink.label} link detected
+              </p>
+              <p className="truncate text-[10px] text-muted-foreground mt-0.5">
+                {clipboardLink.url}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleAcceptClipboardLink}
+              className="h-8 shrink-0 rounded-lg bg-primary px-2.5 text-[11px] font-bold text-primary-foreground hover:bg-primary/90 active:scale-95 transition-transform cursor-pointer"
+            >
+              Paste &amp; Fetch
+            </Button>
+            <button
+              type="button"
+              onClick={handleDismissClipboardLink}
+              aria-label="Dismiss detected clipboard link"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-background/60 hover:text-foreground transition-colors cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
 
         <div className="flex gap-2 pt-1">
           <div className="relative flex-1">

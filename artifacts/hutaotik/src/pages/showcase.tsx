@@ -113,7 +113,7 @@ export default function Showcase() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 relative">
+    <div className="space-y-6 relative">
       {/* Feature-disabled overlay */}
       {!isEnabled && (
         <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl backdrop-blur-sm bg-background/60">

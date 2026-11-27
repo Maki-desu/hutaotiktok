@@ -16,6 +16,12 @@ import {
   type AppUpdateProgressEvent,
   type AvailableRelease,
 } from "@/lib/app-updates";
+import {
+  consumePendingNotificationRoute,
+  promptNotificationPermissionOnce,
+  syncNotificationsToNative,
+  triggerUpdateNotification,
+} from "@/lib/notifications";
 import { DownloadProgressCard } from "@/components/download-progress-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,12 +48,25 @@ export function AppUpdateChecker() {
         return;
       }
       setRelease(latest);
+      if (document.visibilityState !== "visible") {
+        triggerUpdateNotification(latest);
+      }
     } catch (error) {
       console.error("Could not check for Hutaotik updates.", error);
     }
   }, []);
 
   useEffect(() => {
+    syncNotificationsToNative();
+    const pendingRoute = consumePendingNotificationRoute();
+    if (pendingRoute) {
+      window.location.hash = `#${pendingRoute.startsWith("/") ? pendingRoute : `/${pendingRoute}`}`;
+    }
+
+    const promptTimer = window.setTimeout(() => {
+      promptNotificationPermissionOnce();
+    }, 2700);
+
     void sendDeviceCheckIn().catch(() => {});
     void checkForUpdate();
 
@@ -61,6 +80,7 @@ export function AppUpdateChecker() {
     window.addEventListener("hutaotik:check-update", onManualCheck);
 
     return () => {
+      window.clearTimeout(promptTimer);
       window.removeEventListener("focus", onManualCheck);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("hutaotik:check-update", onManualCheck);
@@ -103,8 +123,14 @@ export function AppUpdateChecker() {
     const registerForPush = async () => {
       await PushNotifications.createChannel({
         id: "hutaotik_updates",
-        name: "Hutaotik updates",
+        name: "App Updates",
         description: "App release notifications",
+        importance: 5,
+      });
+      await PushNotifications.createChannel({
+        id: "hutaotik_announcements",
+        name: "Announcements",
+        description: "Important HutaoTik lobby announcements",
         importance: 5,
       });
 

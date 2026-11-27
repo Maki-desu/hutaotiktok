@@ -13,6 +13,7 @@ export type ScreenTransition = (typeof SCREEN_TRANSITIONS)[number];
 
 const STORAGE_KEY = "hutaotik-screen-transition";
 const BOUNCY_DEFAULT_MIGRATION_KEY = "hutaotik-bouncy-screen-v1";
+const CHANGE_EVENT = "hutaotik:screen-transition-changed";
 
 export function loadScreenTransition(): ScreenTransition {
   try {
@@ -35,5 +36,26 @@ export function loadScreenTransition(): ScreenTransition {
 }
 
 export function saveScreenTransition(transition: ScreenTransition): void {
+  localStorage.setItem(BOUNCY_DEFAULT_MIGRATION_KEY, "1");
   localStorage.setItem(STORAGE_KEY, transition);
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new CustomEvent<ScreenTransition>(CHANGE_EVENT, { detail: transition }));
+  }
+}
+
+export function onScreenTransitionChanged(
+  listener: (transition: ScreenTransition) => void,
+): () => void {
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+    return () => {};
+  }
+  const handler = (event: Event) => {
+    if (event instanceof CustomEvent && SCREEN_TRANSITIONS.includes(event.detail)) {
+      listener(event.detail);
+    } else {
+      listener(loadScreenTransition());
+    }
+  };
+  window.addEventListener(CHANGE_EVENT, handler);
+  return () => window.removeEventListener(CHANGE_EVENT, handler);
 }

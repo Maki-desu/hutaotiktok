@@ -227,7 +227,7 @@ export default function Admin() {
 
   if (!isAuthenticated) {
     return (
-      <div className="flex items-center justify-center py-20 animate-in fade-in">
+      <div className="flex items-center justify-center py-20">
         <Card className="w-full max-w-sm border-border bg-card shadow-xl shadow-primary/5">
           <CardHeader className="text-center space-y-2">
             <div className="w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-2 text-primary">
@@ -257,7 +257,7 @@ export default function Admin() {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-syne font-bold">Admin Dashboard</h1>
         <Button variant="outline" onClick={handleLogout}>

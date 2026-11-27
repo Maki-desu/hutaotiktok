@@ -391,20 +391,34 @@ html.theme-transition::after {
   box-shadow: none;
 }
 
+.dropdown-motion {
+  transform-origin: var(
+    --radix-select-content-transform-origin,
+    var(
+      --radix-dropdown-menu-content-transform-origin,
+      var(--radix-popover-content-transform-origin, top center)
+    )
+  );
+}
+
 .dropdown-motion[data-state="open"] {
-  transform-origin: var(--radix-select-content-transform-origin, var(--radix-dropdown-menu-content-transform-origin, center));
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) backwards;
+}
+
+.dropdown-motion[data-state="closed"] {
+  animation: dropdown-bounce-out var(--dropdown-close-duration, 150ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-smooth-in var(--dropdown-open-duration, 560ms) cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: dropdown-smooth-in var(--dropdown-open-duration, 420ms) cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="closed"] {
-  animation: dropdown-smooth-out var(--dropdown-close-duration, 180ms) cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dropdown-smooth-out var(--dropdown-close-duration, 170ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) both;
+  animation: dropdown-bounce-in var(--dropdown-open-duration, 340ms) var(--spring-bounce) backwards;
 }
 
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
@@ -412,15 +426,15 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-slide-in var(--dropdown-open-duration, 420ms) cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: dropdown-slide-in var(--dropdown-open-duration, 340ms) cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 :root[data-dropdown-animation="slide"] .dropdown-motion[data-state="closed"] {
-  animation: dropdown-slide-out var(--dropdown-close-duration, 160ms) cubic-bezier(0.4, 0, 1, 1) both;
+  animation: dropdown-slide-out var(--dropdown-close-duration, 150ms) cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 :root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-fade-in var(--dropdown-open-duration, 360ms) ease-out both;
+  animation: dropdown-fade-in var(--dropdown-open-duration, 280ms) ease-out backwards;
 }
 
 :root[data-dropdown-animation="fade"] .dropdown-motion[data-state="closed"] {
@@ -432,21 +446,22 @@ html.theme-transition::after {
 }
 
 :root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
-:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]),
-:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
-  animation: dropdown-item-drop var(--dropdown-item-duration, 260ms) var(--ease-smooth) both;
+:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: dropdown-item-drop var(--dropdown-item-duration, 260ms) var(--ease-smooth) backwards;
   animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 20ms));
 }
 
+:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+  animation: dropdown-fade-in var(--dropdown-item-duration, 220ms) ease-out backwards;
+  animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 16ms));
+}
+
 :root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
-  animation: dropdown-item-bounce var(--dropdown-item-duration, 280ms) var(--spring-bounce) both;
+  animation: dropdown-item-bounce var(--dropdown-item-duration, 280ms) var(--spring-bounce) backwards;
   animation-delay: calc(var(--dropdown-item-index, 0) * var(--dropdown-item-stagger, 22ms));
 }
 
-:root[data-dropdown-animation="smooth"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
-:root[data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
-:root[data-dropdown-animation="slide"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1),
-:root[data-dropdown-animation="fade"] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1) { --dropdown-item-index: 0; }
+:root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(1) { --dropdown-item-index: 0; }
 :root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(2) { --dropdown-item-index: 1; }
 :root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(3) { --dropdown-item-index: 2; }
 :root[data-dropdown-animation] .dropdown-motion[data-state="open"] :is([role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):nth-child(4) { --dropdown-item-index: 3; }
@@ -464,33 +479,33 @@ html.theme-transition::after {
 }
 
 @keyframes dropdown-smooth-in {
-  from { opacity: 0; filter: blur(7px); transform: translateY(-5px) scale(0.97); }
-  to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+  from { opacity: 0; filter: blur(6px); transform: translate3d(0, -8px, 0) scale(0.96); }
+  to { opacity: 1; filter: blur(0.001px); transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes dropdown-smooth-out {
-  from { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
-  to { opacity: 0; filter: blur(4px); transform: translateY(-3px) scale(0.985); }
+  from { opacity: 1; filter: blur(0.001px); transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 0; filter: blur(4px); transform: translate3d(0, -5px, 0) scale(0.975); }
 }
 
 @keyframes dropdown-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -8px, 0) scale(0.96); }
+  from { opacity: 0; transform: translate3d(0, -10px, 0) scale(0.92); }
   to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes dropdown-bounce-out {
   from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-  to   { opacity: 0; transform: translate3d(0, -5px, 0) scale(0.97); }
+  to   { opacity: 0; transform: translate3d(0, -6px, 0) scale(0.95); }
 }
 
 @keyframes dropdown-slide-in {
-  from { opacity: 0; transform: translate3d(0, -8px, 0); }
+  from { opacity: 0; transform: translate3d(0, -14px, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes dropdown-slide-out {
   from { opacity: 1; transform: translate3d(0, 0, 0); }
-  to   { opacity: 0; transform: translate3d(0, -5px, 0); }
+  to   { opacity: 0; transform: translate3d(0, -8px, 0); }
 }
 
 @keyframes dropdown-fade-in {
@@ -506,7 +521,7 @@ html.theme-transition::after {
 @keyframes dropdown-item-drop {
   from {
     opacity: 0;
-    transform: translate3d(0, -6px, 0);
+    transform: translate3d(0, -8px, 0);
   }
   to {
     opacity: 1;
@@ -517,7 +532,7 @@ html.theme-transition::after {
 @keyframes dropdown-item-bounce {
   from {
     opacity: 0;
-    transform: translate3d(0, -7px, 0) scale(0.975);
+    transform: translate3d(0, -9px, 0) scale(0.95);
   }
   to {
     opacity: 1;
@@ -549,32 +564,35 @@ html.theme-transition::after {
 }
 
 .settings-disclosure[open] > :not(summary) {
-  animation: disclosure-bounce-in 300ms var(--spring-bounce) both;
+  animation: disclosure-bounce-in 300ms var(--spring-bounce) backwards;
   transform-origin: top center;
 }
 
 @keyframes disclosure-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -6px, 0); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+  from { opacity: 0; transform: translate3d(0, -10px, 0) scale(0.985); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 .screen-transition {
   min-height: 100%;
-  animation-duration: 380ms;
+  animation-duration: 360ms;
   animation-timing-function: var(--ease-smooth);
-  animation-fill-mode: both;
+  animation-fill-mode: backwards;
 }
 
 .screen-transition--fade {
   animation-name: screen-fade-in;
+  animation-duration: 300ms;
 }
 
 .screen-transition--slide {
   animation-name: screen-slide-in;
+  animation-duration: 360ms;
 }
 
 .screen-transition--zoom {
   animation-name: screen-zoom-in;
+  animation-duration: 360ms;
 }
 
 .screen-transition--bounce {
@@ -585,8 +603,8 @@ html.theme-transition::after {
 
 .screen-transition--elastic {
   animation-name: screen-elastic-in;
-  animation-duration: 460ms;
-  animation-timing-function: cubic-bezier(0.22, 1.2, 0.36, 1);
+  animation-duration: 500ms;
+  animation-timing-function: cubic-bezier(0.22, 1.24, 0.36, 1);
 }
 
 .screen-transition--flip {
@@ -594,11 +612,12 @@ html.theme-transition::after {
   animation-duration: 460ms;
   animation-timing-function: var(--spring-bounce);
   transform-origin: center center;
+  backface-visibility: hidden;
 }
 
 .screen-transition--blur {
   animation-name: screen-blur-in;
-  animation-duration: 400ms;
+  animation-duration: 380ms;
 }
 
 @keyframes screen-fade-in {
@@ -607,33 +626,35 @@ html.theme-transition::after {
 }
 
 @keyframes screen-slide-in {
-  from { opacity: 0; transform: translate3d(16px, 0, 0); }
+  from { opacity: 0; transform: translate3d(42px, 0, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes screen-zoom-in {
-  from { opacity: 0; transform: scale(0.975); }
+  from { opacity: 0; transform: scale(0.92); }
   to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes screen-bounce-in {
-  from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.985); }
+  from { opacity: 0; transform: translate3d(0, 26px, 0) scale(0.95); }
   to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-elastic-in {
-  from { opacity: 0; transform: translate3d(20px, 0, 0) scale(0.98); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(34px, 0, 0) scale(0.92); }
+  62%  { opacity: 1; transform: translate3d(-5px, 0, 0) scale(1.015); }
+  84%  { opacity: 1; transform: translate3d(2px, 0, 0) scale(0.996); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-flip-in {
-  from { opacity: 0; transform: perspective(900px) rotateY(-8deg) translate3d(10px, 0, 0); }
-  to   { opacity: 1; transform: perspective(900px) rotateY(0) translate3d(0, 0, 0); }
+  from { opacity: 0; transform: perspective(1100px) rotateY(-24deg) translate3d(18px, 0, 0) scale(0.96); }
+  to   { opacity: 1; transform: perspective(1100px) rotateY(0deg) translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes screen-blur-in {
-  from { opacity: 0; filter: blur(8px); transform: scale(1.015); }
-  to   { opacity: 1; filter: blur(0); transform: scale(1); }
+  from { opacity: 0; filter: blur(10px); transform: scale(1.03); }
+  to   { opacity: 1; filter: blur(0.001px); transform: scale(1); }
 }
 
 @keyframes theme-color-wave {
@@ -784,7 +805,7 @@ summary:active {
 }
 
 .dialog-bounce-content[data-state="open"] {
-  animation: dialog-bounce-in 300ms var(--spring-bounce) both;
+  animation: dialog-bounce-in 300ms var(--spring-bounce) backwards;
 }
 
 .dialog-bounce-content[data-state="closed"] {
@@ -792,22 +813,31 @@ summary:active {
 }
 
 .toast-bounce[data-state="open"] {
-  animation: toast-bounce-in 340ms var(--spring-bounce) both;
+  animation: toast-bounce-in 340ms var(--spring-bounce) backwards;
+}
+
+.toast-bounce[data-state="closed"] {
+  animation: toast-bounce-out 180ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 @keyframes dialog-bounce-in {
-  from { opacity: 0; transform: scale(0.94); }
+  from { opacity: 0; transform: scale(0.92); }
   to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes dialog-bounce-out {
   from { opacity: 1; transform: scale(1); }
-  to   { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 0; transform: scale(0.95); }
 }
 
 @keyframes toast-bounce-in {
-  from { opacity: 0; transform: translate3d(0, -12px, 0) scale(0.97); }
+  from { opacity: 0; transform: translate3d(0, -14px, 0) scale(0.95); }
   to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes toast-bounce-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to   { opacity: 0; transform: translate3d(16px, 0, 0) scale(0.96); }
 }
 
 /* ── Ghost orbit animations ─────────────────────────────────── */
@@ -834,27 +864,27 @@ summary:active {
 
 /* ── Reusable Smooth Spring Utilities ───────────────────────── */
 .animate-bounce-pop {
-  animation: bounce-pop-in 360ms var(--spring-bounce) both;
+  animation: bounce-pop-in 360ms var(--spring-bounce) backwards;
 }
 
 .animate-card-bounce-in {
-  animation: card-bounce-in 380ms var(--spring-bounce) both;
+  animation: card-bounce-in 380ms var(--spring-bounce) backwards;
 }
 
 .animate-success-pop {
-  animation: success-rubber-pop 380ms var(--spring-bounce) both;
+  animation: success-rubber-pop 380ms var(--spring-bounce) backwards;
 }
 
 .animate-error-shake {
-  animation: error-bounce-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  animation: error-bounce-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) backwards;
 }
 
 .animate-splash-logo {
-  animation: splash-logo-bounce 520ms var(--spring-bounce) both;
+  animation: splash-logo-bounce 520ms var(--spring-bounce) backwards;
 }
 
 .animate-pill-pop {
-  animation: pill-pop 260ms var(--spring-bounce) both;
+  animation: pill-pop 260ms var(--spring-bounce) backwards;
 }
 
 .animate-float-gentle {
@@ -934,7 +964,7 @@ summary:active {
 }
 
 :root[data-bounce-animation="off"] .dialog-bounce-content[data-state="open"] {
-  animation: dropdown-fade-in 160ms ease-out both;
+  animation: dropdown-fade-in 160ms ease-out backwards;
 }
 
 :root[data-bounce-animation="off"] .dialog-bounce-content[data-state="closed"] {
@@ -942,11 +972,15 @@ summary:active {
 }
 
 :root[data-bounce-animation="off"] .toast-bounce[data-state="open"] {
-  animation: dropdown-fade-in 180ms ease-out both;
+  animation: dropdown-fade-in 180ms ease-out backwards;
+}
+
+:root[data-bounce-animation="off"] .toast-bounce[data-state="closed"] {
+  animation: dropdown-fade-out 140ms ease-in both;
 }
 
 :root[data-bounce-animation="off"][data-dropdown-animation="bounce"] .dropdown-motion[data-state="open"] {
-  animation: dropdown-fade-in var(--dropdown-open-duration, 200ms) ease-out both;
+  animation: dropdown-fade-in var(--dropdown-open-duration, 200ms) ease-out backwards;
 }
 
 :root[data-bounce-animation="off"][data-dropdown-animation="bounce"] .dropdown-motion[data-state="closed"] {
